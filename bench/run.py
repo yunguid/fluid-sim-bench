@@ -383,9 +383,11 @@ def capture(job, display):
         job.meta["gl_errors"] = log.count("GL_") + log.count("SHADER_COMPILATION")
 
 
-def finish(job, ok):
+def finish(job, ok, partial=None):
+    """partial names the last stage run when the run stopped early on purpose;
+    such a job is picked up again by a later, fuller run."""
     job.state = "ok" if ok else "failed"
-    job.meta["status"] = job.state
+    job.meta["status"] = f"{partial}-done" if (ok and partial) else job.state
     job.meta["finished_at"] = datetime.datetime.now().isoformat(timespec="seconds")
     job.save()
 
@@ -440,11 +442,11 @@ def main():
     def after_generate(job):
         try:
             if a.stage == "generate":
-                return finish(job, True)
+                return finish(job, True, "generate")
             if not build(job):
                 return finish(job, False)
             if a.stage == "build":
-                return finish(job, True)
+                return finish(job, True, "build")
             with disp_lock:
                 d = displays.pop()
             try:
