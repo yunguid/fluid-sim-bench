@@ -366,7 +366,7 @@ def build(job):
     if res is None:
         raise InfraError(f"sandbox failed: {r.stderr[-300:]}")
     log = open(job.path("build.log"), errors="replace").read()
-    job.meta.update({"build_ok": res["ok"], "build_seconds": res["seconds"],
+    job.meta.update({"build_ok": res["ok"], "build_seconds": res["seconds"], "wasm_bytes": res.get("bytes"),
                      "build_errors": log.count("error:"), "build_warnings": log.count("warning:")})
     if not res["ok"]:
         first = (re.findall(r".*error:.*", log) or [res.get("error") or log[-300:]])[0]
@@ -382,10 +382,16 @@ def run_app(job):
     res = read_json(job.path("run.json"))
     if res is None:
         raise InfraError(f"sandbox failed: {r.stderr[-300:]}")
+    if res.get("stage") == "harness":
+        raise InfraError(res.get("error"))
+    img = res.get("image") or {}
     job.meta.update({"run_ok": res["ok"], "startup_seconds": res.get("startup_seconds"),
-                     "validation_errors": res.get("validation_errors"), "shader_errors": res.get("shader_errors")})
+                     "fps_software": res.get("fps_software"), "console_errors": res.get("console_errors"),
+                     "validation_errors": res.get("validation_errors"), "shader_errors": res.get("shader_errors"),
+                     "change_without_input": img.get("change_without_input"),
+                     "change_with_input": img.get("change_with_input")})
     if not res["ok"]:
-        job.meta.update({"stage": res.get("stage", "run"), "error": res.get("error"), "exit_code": res.get("exit_code")})
+        job.meta.update({"stage": res.get("stage", "run"), "error": res.get("error")})
     return res["ok"]
 
 

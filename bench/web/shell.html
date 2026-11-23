@@ -1,0 +1,53 @@
+<!doctype html>
+<!-- The fixed page every entry runs in. It is part of the harness, not the
+     entry: it gives the program a full-window canvas, and records what the
+     test harness reads back (window.__bench). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fluid-sim-bench entry</title>
+<link rel="icon" href="data:,">
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; outline: none; }
+  #msg { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+         color: #bbb; font: 14px/1.4 ui-monospace, Menlo, monospace; white-space: pre-wrap;
+         text-align: center; padding: 24px; pointer-events: none; }
+  #msg.err { color: #ff7b72; background: rgba(0,0,0,.75); }
+</style>
+</head>
+<body>
+<canvas id="canvas" tabindex="-1" oncontextmenu="event.preventDefault()"></canvas>
+<div id="msg">loading…</div>
+<script>
+  const B = window.__bench = { start: performance.now(), ready: false, aborted: false,
+                               errors: [], log: [], appFrames: 0, firstFrameMs: null };
+  const msg = document.getElementById('msg');
+  function fail(text) {
+    B.errors.push(String(text));
+    msg.className = 'err';
+    msg.textContent = String(text).slice(0, 600);
+  }
+  // Count the program's own frames: sokol asks for every frame through
+  // requestAnimationFrame, so a crashed or stalled program stops counting.
+  const raf = window.requestAnimationFrame.bind(window);
+  window.requestAnimationFrame = cb => raf(t => {
+    B.appFrames++;
+    if (B.firstFrameMs === null) B.firstFrameMs = performance.now() - B.start;
+    cb(t);
+  });
+  window.addEventListener('error', e => fail(e.message || e));
+  window.addEventListener('unhandledrejection', e => fail(e.reason));
+  var Module = {
+    canvas: document.getElementById('canvas'),
+    print: t => { B.log.push(t); console.log(t); },
+    printErr: t => { B.log.push(t); console.warn(t); },
+    onRuntimeInitialized: () => { B.ready = true; msg.textContent = ''; },
+    onAbort: what => { B.aborted = true; fail('program aborted: ' + what); },
+  };
+  document.getElementById('canvas').focus();
+</script>
+<script src="app.js" async></script>
+</body>
+</html>

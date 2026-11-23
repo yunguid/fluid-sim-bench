@@ -27,7 +27,7 @@
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; cursor: pointer; }
   .card:hover { border-color: #3a404a; }
   .media { aspect-ratio: 16/9; background: #000; position: relative; display: grid; place-items: center; }
-  .media img, .media video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .media img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .media .fail { color: var(--dim); font-size: 12px; padding: 12px; text-align: center; }
   .badge { position: absolute; top: 8px; left: 8px; font-size: 11px; padding: 2px 7px; border-radius: 99px;
            background: rgba(0,0,0,.65); border: 1px solid var(--line); }
@@ -38,7 +38,28 @@
   dialog::backdrop { background: rgba(0,0,0,.7); }
   .dlg-head { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); }
   .dlg-body { padding: 14px; overflow: auto; max-height: calc(94vh - 50px); }
-  .dlg-body video { width: 100%; border-radius: 8px; background: #000; }
+  .live { position: relative; aspect-ratio: 16/9; background: #000; border-radius: 8px; overflow: hidden; }
+  .live iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+  .dlg-links { display: flex; gap: 12px; margin-top: 8px; font-size: 12px; }
+  a { color: var(--accent); }
+  .pick { position: absolute; top: 8px; right: 8px; font-size: 11px; padding: 2px 8px; border-radius: 99px;
+          background: rgba(0,0,0,.65); border: 1px solid var(--line); color: var(--dim); }
+  .pick[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
+  .media .play { position: absolute; inset: auto 8px 8px auto; font-size: 11px; padding: 2px 8px; border-radius: 99px;
+                 background: rgba(0,0,0,.65); border: 1px solid var(--line); opacity: 0; transition: opacity .15s; }
+  .card:hover .play { opacity: 1; }
+  .warn { color: var(--warn); }
+  #cmp { position: fixed; inset: 0; z-index: 5; background: #000; display: none; flex-direction: column; }
+  #cmp.on { display: flex; }
+  #cmp .bar { display: flex; gap: 10px; align-items: center; padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  #cmp .grid { flex: 1; display: grid; gap: 2px; background: var(--line); }
+  #cmp .cell { position: relative; background: #000; }
+  #cmp .cell iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+  #cmp .cell b { position: absolute; z-index: 1; bottom: 8px; left: 8px; font-size: 12px; font-weight: 500; pointer-events: none;
+                 background: rgba(0,0,0,.65); padding: 2px 8px; border-radius: 99px; }
+  .shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+  .shots figure { margin: 0; } .shots img { width: 100%; border-radius: 6px; display: block; }
+  .shots figcaption { color: var(--dim); font-size: 12px; margin-top: 4px; }
   .tabs { display: flex; gap: 6px; margin: 12px 0 8px; }
   pre { background: #0a0c0f; border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow: auto;
         font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; max-height: 60vh; white-space: pre; }
@@ -60,16 +81,23 @@
     <option value="name">Sort: name</option>
     <option value="cost">Sort: cost</option>
   </select>
+  <button id="cmp-open" disabled>Compare live (0)</button>
   <span class="stats" id="stats"></span>
 </header>
+<div id="cmp" role="dialog" aria-label="Compare live">
+  <div class="bar"><strong>Compare live</strong><span class="stats" id="cmp-note"></span><button id="cmp-close">Close</button></div>
+  <div class="grid" id="cmp-grid"></div>
+</div>
 <main id="main"><div class="empty">Loading…</div></main>
 
 <dialog id="dlg">
   <div class="dlg-head"><strong id="dlg-title"></strong><button id="dlg-close">Close</button></div>
   <div class="dlg-body">
-    <video id="dlg-video" controls loop muted playsinline></video>
+    <div class="live" id="dlg-live"></div>
+    <div class="dlg-links" id="dlg-links"></div>
     <div class="tabs">
-      <button data-tab="code" aria-pressed="true">main.cpp</button>
+      <button data-tab="shots" aria-pressed="true">Test screenshots</button>
+      <button data-tab="code" aria-pressed="false">main.cpp</button>
       <button data-tab="build" aria-pressed="false">Build log</button>
       <button data-tab="run" aria-pressed="false">Run log</button>
       <button data-tab="response" aria-pressed="false">Full response</button>
@@ -82,7 +110,8 @@
 
 <script>
 const $ = s => document.querySelector(s);
-const state = { run: null, data: null, filter: "all", sort: "score" };
+const state = { run: null, data: null, filter: "all", sort: "score", picked: [] };
+const MAX_COMPARE = 4;   // each live entry is a WebGL context; browsers allow ~16
 const base = () => `../results/${state.run}/`;
 const fmt = {
   cost: c => c == null ? "–" : c === 0 ? "local" : `$${c.toFixed(3)}`,
@@ -136,9 +165,10 @@ function render() {
   document.querySelectorAll(".card").forEach(el => {
     const e = entries.find(x => x.dir === el.dataset.dir);
     el.onclick = () => open(e);
-    const v = el.querySelector("video");
-    if (v) { el.onmouseenter = () => v.play().catch(() => {}); el.onmouseleave = () => v.pause(); }
+    const p = el.querySelector(".pick");
+    if (p) p.onclick = ev => { ev.stopPropagation(); togglePick(e); };
   });
+  updatePicks();
 }
 
 function card(e) {
@@ -148,15 +178,24 @@ function card(e) {
   const pending = !e.status || infra || (e.status || "").endsWith("-done");
   const label = working ? "runs" : infra ? e.status : pending ? (e.status || "pending") : `failed: ${e.stage || "?"}`;
   const cls = working ? "ok" : pending ? "pending" : "bad";
+  const playable = e.build_ok;
   const media = e.run_ok != null && e.build_ok
-    ? `<video src="${d}capture.mp4" poster="${d}poster.jpg" muted loop playsinline preload="none"></video>`
+    ? `<img src="${d}poster.jpg" alt="" loading="lazy" onerror="this.remove()"><span class="play">▶ run live</span>`
     : `<div class="fail">${esc(e.error || (pending ? "waiting…" : "no output"))}</div>`;
+  const picked = state.picked.some(p => p.dir === e.dir);
+  const pick = playable ? `<button class="pick" aria-pressed="${picked}">${picked ? "✓ compare" : "+ compare"}</button>` : "";
+  const flags = [
+    e.change_without_input != null && e.change_without_input < 0.5 ? "static without input" : "",
+    e.change_with_input != null && e.change_with_input < 0.5 ? "no visible response to drag" : "",
+    e.validation_errors ? `${e.validation_errors} validation errs` : "",
+  ].filter(Boolean).map(f => `<span class="warn">${f}</span>`).join("");
   return `<div class="card" data-dir="${esc(e.dir)}">
-    <div class="media">${media}<span class="badge ${cls}">t${e.trial} · ${esc(label)}</span></div>
+    <div class="media">${media}<span class="badge ${cls}">t${e.trial} · ${esc(label)}</span>${pick}</div>
     <div class="info"><span>${e.lines ?? "–"} lines</span><span>${fmt.secs(e.gen_seconds)}</span>
       <span>${fmt.cost(e.cost)}</span>${e.tokens_per_s ? `<span>${e.tokens_per_s} tok/s</span>` : ""}
       ${e.reasoning_tokens ? `<span>${Math.round(e.reasoning_tokens / 1000)}k reasoning</span>` : ""}
-      ${e.validation_errors ? `<span style="color:var(--warn)">${e.validation_errors} validation errs</span>` : ""}</div>
+      ${e.fps_software ? `<span title="frames per second in the software-rendered test, not on a GPU">${e.fps_software} fps (sw)</span>` : ""}
+      ${flags}</div>
   </div>`;
 }
 
@@ -165,17 +204,52 @@ function open(e) {
   current = e;
   const d = base() + e.dir + "/";
   $("#dlg-title").textContent = `${e.slug} · trial ${e.trial}`;
-  const v = $("#dlg-video");
-  v.style.display = e.build_ok && e.run_ok != null ? "" : "none";
-  v.src = e.build_ok ? d + "capture.mp4" : "";
-  showTab("code");
+  const live = $("#dlg-live");
+  live.style.display = e.build_ok ? "" : "none";
+  live.innerHTML = e.build_ok ? `<iframe src="${d}web/index.html" title="${esc(e.slug)} live" allow="fullscreen"></iframe>` : "";
+  $("#dlg-links").innerHTML = e.build_ok
+    ? `<a href="${d}web/index.html" target="_blank" rel="noopener">Open full window ↗</a><span class="stats">Drag to push the fluid. Runs on your GPU.</span>` : "";
+  showTab(e.run_ok != null ? "shots" : "code");
   $("#dlg").showModal();
-  v.play().catch(() => {});
 }
+
+function togglePick(e) {
+  const i = state.picked.findIndex(p => p.dir === e.dir);
+  if (i >= 0) state.picked.splice(i, 1);
+  else { if (state.picked.length >= MAX_COMPARE) state.picked.shift(); state.picked.push({ dir: e.dir, slug: e.slug, trial: e.trial }); }
+  render();
+}
+
+function updatePicks() {
+  const b = $("#cmp-open");
+  b.textContent = `Compare live (${state.picked.length})`;
+  b.disabled = state.picked.length < 2;
+}
+
+function openCompare() {
+  const n = state.picked.length;
+  const g = $("#cmp-grid");
+  g.style.gridTemplateColumns = n <= 1 ? "1fr" : "1fr 1fr";
+  g.style.gridTemplateRows = n <= 2 ? "1fr" : "1fr 1fr";
+  g.innerHTML = state.picked.map(p => `<div class="cell"><b>${esc(p.slug)} · t${p.trial}</b>
+    <iframe src="${base()}${p.dir}/web/index.html" title="${esc(p.slug)} live"></iframe></div>`).join("");
+  $("#cmp-note").textContent = "Each one runs live on your GPU. Drag inside any of them.";
+  $("#cmp").classList.add("on");
+}
+function closeCompare() { $("#cmp-grid").innerHTML = ""; $("#cmp").classList.remove("on"); }
 
 async function showTab(tab) {
   document.querySelectorAll("[data-tab]").forEach(b => b.setAttribute("aria-pressed", b.dataset.tab === tab));
   const d = base() + current.dir + "/";
+  if (tab === "shots") {
+    const t = [[1, "1 s"], [4, "4 s"], [7.5, "7.5 s · during drag"], [11, "11 s · after drag"], [14, "14 s"]];
+    $("#dlg-content").innerHTML = current.run_ok == null ? `<pre>(not tested yet)</pre>` :
+      `<div class="shots">${t.map(([s, c]) => `<figure><img src="${d}shots/${s}.jpg" alt="" loading="lazy" onerror="this.parentNode.remove()">
+       <figcaption>${c}</figcaption></figure>`).join("")}</div>
+       <p class="stats">Headless Chromium, software WebGL2, 1280×720. Change without input: ${current.change_without_input ?? "–"} ·
+       change from the drag: ${current.change_with_input ?? "–"} · ${current.fps_software ?? "–"} fps in software.</p>`;
+    return;
+  }
   if (tab === "meta") {
     $("#dlg-content").innerHTML = `<div class="kv">${Object.entries(current).map(([k, v]) =>
       `<span>${esc(k)}</span><b>${esc(typeof v === "object" ? JSON.stringify(v) : v)}</b>`).join("")}</div>`;
@@ -193,9 +267,12 @@ document.querySelectorAll("[data-filter]").forEach(b => b.onclick = () => {
   render();
 });
 $("#sort").onchange = e => { state.sort = e.target.value; render(); };
-$("#dlg-close").onclick = () => { $("#dlg-video").pause(); $("#dlg").close(); };
-$("#dlg").addEventListener("close", () => $("#dlg-video").pause());
-setInterval(() => state.run && load().catch(() => {}), 15000);   // live while a run is going
+$("#dlg-close").onclick = () => $("#dlg").close();
+$("#dlg").addEventListener("close", () => { $("#dlg-live").innerHTML = ""; });   // stop the live entry
+$("#cmp-open").onclick = openCompare;
+$("#cmp-close").onclick = closeCompare;
+document.addEventListener("keydown", ev => { if (ev.key === "Escape") closeCompare(); });
+setInterval(() => state.run && !$("#cmp").classList.contains("on") && load().catch(() => {}), 15000);   // live while a run is going
 loadRuns();
 </script>
 </body>

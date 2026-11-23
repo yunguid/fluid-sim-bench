@@ -1,17 +1,21 @@
 # Builds the shared SDK library once, then links any entry against it.
 #
-#   make -C bench/sdk                                  # build/libbenchsdk.a
-#   make -C bench/sdk app ENTRY=/abs/main.cpp OUT=/abs/app
+#   make -C bench/sdk                                    # build/sdk/libbenchsdk.a
+#   make -C bench/sdk app ENTRY=/abs/main.cpp OUT=/abs/web
 #
-# Linux, OpenGL 4.1 core through GLX/X11.
+# WebAssembly + WebGL2 through Emscripten. An entry builds to OUT/app.js and
+# OUT/app.wasm; OUT/index.html is the fixed page from bench/web/shell.html.
 
 ROOT     := $(abspath ../..)
 BUILD    := $(ROOT)/build/sdk
 TP       := $(ROOT)/third_party
-CXX      ?= g++
-CXXFLAGS ?= -O2 -std=c++17
+CXX      := em++
+AR       := emar
+CXXFLAGS := -O2 -std=c++17
 INCLUDES := -I$(CURDIR) -I$(TP)/sokol -I$(TP)/imgui
-LIBS     := -lX11 -lXi -lXcursor -lGL -ldl -lpthread -lm
+LDFLAGS  := -sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 -sALLOW_MEMORY_GROWTH=1 \
+            -sSTACK_SIZE=4MB -sENVIRONMENT=web -sEXPORTED_RUNTIME_METHODS=ccall
+SHELL_HTML := $(ROOT)/bench/web/shell.html
 
 IMGUI_SRC := imgui.cpp imgui_draw.cpp imgui_tables.cpp imgui_widgets.cpp
 OBJS := $(BUILD)/sokol_impl.o $(patsubst %.cpp,$(BUILD)/%.o,$(IMGUI_SRC))
@@ -27,16 +31,18 @@ $(BUILD)/%.o: $(TP)/imgui/%.cpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 $(LIB): $(OBJS)
-	ar rcs $@ $^
+	$(AR) rcs $@ $^
 
 $(BUILD):
 	mkdir -p $@
 
 app: $(LIB)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) $(ENTRY) $(LIB) $(LIBS) -o $(OUT)
+	mkdir -p $(OUT)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(ENTRY) $(LIB) $(LDFLAGS) -o $(OUT)/app.js
+	cp $(SHELL_HTML) $(OUT)/index.html
 
 skeleton: $(LIB)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) skeleton.cpp $(LIB) $(LIBS) -o $(BUILD)/skeleton
+	$(MAKE) app ENTRY=$(CURDIR)/skeleton.cpp OUT=$(BUILD)/skeleton
 
 clean:
 	rm -rf $(BUILD)

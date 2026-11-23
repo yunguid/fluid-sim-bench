@@ -1,16 +1,17 @@
 // skeleton.cpp: reference program for the vendored sokol + Dear ImGui API.
 //
 // It is NOT a fluid simulation. It shows every API pattern an entry needs:
-// a fullscreen-triangle pipeline, GLSL 410 shaders with a uniform block and a
+// a fullscreen-triangle pipeline, GLSL ES 3.00 shaders with a uniform block and a
 // sampled texture, ping-pong RGBA16F render targets with attachment and
-// texture views, mouse input, an ImGui panel, and the swapchain pass.
+// texture views, mouse input, an ImGui panel, and the swapchain pass. It runs
+// in the browser on WebGL2, and the canvas can be any size.
 // The program fades a dye texture and paints into it with the mouse.
 #include "bench.h"
 #include <cmath>
 
 static const int SIM_W = 512, SIM_H = 288;
 
-static const char* VS = R"(#version 410
+static const char* VS = R"(#version 300 es
 layout(location=0) in vec2 pos;
 out vec2 uv;
 void main() {
@@ -20,7 +21,9 @@ void main() {
 )";
 
 // Offscreen pass: read the previous texture, fade it, add a gaussian splat.
-static const char* FS_PAINT = R"(#version 410
+static const char* FS_PAINT = R"(#version 300 es
+precision highp float;
+precision highp sampler2D;
 uniform sampler2D src;
 uniform vec4 splat;   // xy: point in uv space, z: radius, w: strength
 uniform vec4 color;   // rgb: splat color, a: fade factor
@@ -36,7 +39,9 @@ void main() {
 )";
 
 // Swapchain pass: draw the texture to the screen.
-static const char* FS_SHOW = R"(#version 410
+static const char* FS_SHOW = R"(#version 300 es
+precision highp float;
+precision highp sampler2D;
 uniform sampler2D src;
 in vec2 uv;
 out vec4 frag;

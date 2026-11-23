@@ -1,10 +1,10 @@
 // bench.h: the single include every benchmark entry uses.
-// It pulls in sokol (OpenGL 4.1 core backend) and Dear ImGui. The
-// implementations are compiled once, in sokol_impl.cpp, so an entry must NOT
-// define SOKOL_IMPL itself.
+// It pulls in sokol (WebGL2 / GLES3 backend, built with Emscripten) and
+// Dear ImGui. The implementations are compiled once, in sokol_impl.cpp, so an
+// entry must NOT define SOKOL_IMPL itself.
 #pragma once
-#ifndef SOKOL_GLCORE
-#define SOKOL_GLCORE
+#ifndef SOKOL_GLES3
+#define SOKOL_GLES3
 #endif
 #include "imgui.h"
 #include "sokol_app.h"

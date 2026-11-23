@@ -31,17 +31,22 @@ are stated to the model in the prompt.
 
 ## 3. Testing the program (stated in the prompt)
 
-All of this happens in a sandbox container: no network, read-only system,
-all capabilities dropped, 8 CPUs and 8 GB of memory, write access only to
-the job's own folder.
+Entries are browser programs: C++ compiled to WebAssembly with Emscripten,
+drawing with WebGL2. All building and testing happens in a sandbox
+container: no network, read-only system, all capabilities dropped, 8 CPUs and
+8 GB of memory, write access only to the job's own folder. Emscripten's
+library cache is prepared once and read-only for entries.
 
 | Rule | Setting |
 | --- | --- |
-| Build | The fixed command in the prompt must succeed within 5 minutes. |
-| Startup | A window must appear within 30 seconds of launch. |
-| Run | After 2 seconds of settling, 15 seconds are recorded at 30 fps. The program must still be running at the end. |
-| Input | The same for every entry: at second 5 of the recording, the left button is held and the cursor traces a figure-eight through the middle of the window for about 5 seconds. |
-| Display | 1280×720, OpenGL 4.1+ through Mesa's software renderer (llvmpipe). |
+| Build | The fixed `em++` command in the prompt must succeed within 5 minutes. |
+| Page | Every entry runs in the same fixed page (`bench/web/shell.html`), which gives it a full-window canvas and records errors and frame counts. |
+| Browser | Headless Chromium, 1280×720, software WebGL2 (SwiftShader), driven over the DevTools protocol. |
+| Startup | The program must draw frames within 30 seconds of the page loading. |
+| Run | After 2 seconds of settling, a 15-second test runs. The program must still be drawing frames at the end, with no uncaught error or abort. A page that stops responding for 30 seconds fails. |
+| Input | The same for every entry: at second 5, the left button is held and the cursor traces a figure-eight through the middle of the window for about 5 seconds, as real browser mouse events. |
+| Recorded | Screenshots at 1, 4, 7.5, 11 and 14 s (11 s is the poster), frames per second in software, how much the image changes without input (1 s to 4 s) and from the drag (4 s to 11 s), console errors, sokol validation and shader errors. |
+| Judging | People run every working entry live in the gallery on their own GPU, alone or side by side. |
 
 ## 4. Spending
 
