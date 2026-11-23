@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Renaissance Fluid Simulation with Verlet Integration</title>
+  <style>
+    /* Renaissance Fluid Simulation
+       Inspired by da Vinci’s fluid studies, this simulation focuses on
+       individual droplets that evolve with Verlet integration. The droplets
+       traverse a perfectly looping noise field, and their color slowly transitions
+       from dark blue to dark green in a realistic manner.
+    */
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #111; /* Deep background to emphasize the droplets */
+      overflow: hidden;
+    }
+    canvas {
+      display: block;
+      background: #111;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  
+  <!-- Load SimplexNoise library -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/simplex-noise/2.4.0/simplex-noise.min.js"></script>
+  <script>
+    // ===============================================================
+    // Global Configuration
+    // ===============================================================
+    const CONFIG = {
+      dropletCount: 4000,       // Number of droplets
+      dropletSpeed: 2.0,        // (Used for relative scaling in integration)
+      turbulence: 0.25,         // Acceleration factor from noise
+      noiseScale: 0.002,        // Scale for spatial noise sampling
+      fadeAlpha: 0.04,          // Fading factor for trail persistence
+      loopPeriod: 600           // Frames per perfect loop cycle
+    };
+
+    // ===============================================================
+    // Canvas Setup
+    // ===============================================================
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    let width = canvas.width = window.innerWidth;
+    let height = canvas.height = window.innerHeight;
+    window.addEventListener("resize", () => {
+      width = canvas.width = window.innerWidth;
+      height = canvas.height = window.innerHeight;
+    });
+
+    // ===============================================================
+    // Perfectly Periodic Noise Field Setup (4D)
+    // ===============================================================
+    // We sample noise with (x, y, cos(phase), sin(phase)) so that the time dimension
+    // wraps around and creates a perfect loop.
+    const simplex = new SimplexNoise();
+
+    // ===============================================================
+    // Utility Functions
+    // ===============================================================
+    function lerp(a, b, t) { return a + (b - a) * t; }
+    function mod(n, m) { return ((n % m) + m) % m; }  // Modulo ensuring a positive result
+
+    // ===============================================================
+    // Global Color Transition Function
+    // ===============================================================
+    // The stroke color transitions from dark blue (hue ≈ 220) to dark green (hue ≈ 140)
+    // and back over one full loop.
+    function computeGlobalHue(loopTime) {
+      const phase = (2 * Math.PI * loopTime) / CONFIG.loopPeriod; // Ranges from 0 to 2π
+      const t = (Math.cos(phase) + 1) / 2;  // t = 1 at phase 0, t = 0 at phase π, then back to 1
+      return lerp(220, 140, 1 - t);
+    }
+
+    // ===============================================================
+    // Particle (Droplet) Class with Verlet Integration
+    // ===============================================================
+    class Particle {
+      constructor() { this.reset(); }
+      reset() {
+        // Initialize at a random position.
+        this.x = Math.random() * width;
+        this.y = Math.random() * height;
+        this.prevX = this.x;
+        this.prevY = this.y;
+      }
+      update(loopTime) {
+        // Compute periodic time parameters.
+        const phase = (2 * Math.PI * loopTime) / CONFIG.loopPeriod;
+        // Sample 4D noise to get a value that we use to compute an angle.
+        const noiseVal = simplex.noise4D(
+          this.x * CONFIG.noiseScale,
+          this.y * CONFIG.noiseScale,
+          Math.cos(phase),
+          Math.sin(phase)
+        );
+        const angle = noiseVal * 2 * Math.PI;
+        // Compute acceleration from the noise-derived angle.
+        const ax = Math.cos(angle) * CONFIG.turbulence;
+        const ay = Math.sin(angle) * CONFIG.turbulence;
+        // Verlet integration:
+        // new_position = current_position + (current_position - previous_position)*damping + acceleration
+        const damping = 0.99;
+        const newX = this.x + (this.x - this.prevX) * damping + ax;
+        const newY = this.y + (this.y - this.prevY) * damping + ay;
+        // Update previous position then current position.
+        this.prevX = this.x;
+        this.prevY = this.y;
+        this.x = newX;
+        this.y = newY;
+        // Wrap around the edges (toroidal domain)
+        if (this.x < 0) this.x += width;
+        if (this.x >= width) this.x -= width;
+        if (this.y < 0) this.y += height;
+        if (this.y >= height) this.y -= height;
+      }
+      draw(ctx, globalHue) {
+        // Draw a small circle (droplet) at the current position.
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, 2, 0, Math.PI * 2);
+        ctx.fillStyle = `hsl(${globalHue}, 100%, 20%)`;
+        ctx.fill();
+      }
+    }
+
+    // ===============================================================
+    // Create Droplets
+    // ===============================================================
+    const particles = [];
+    for (let i = 0; i < CONFIG.dropletCount; i++) {
+      particles.push(new Particle());
+    }
+
+    // ===============================================================
+    // Animation Loop
+    // ===============================================================
+    let frame = 0;
+    function animate() {
+      requestAnimationFrame(animate);
+      // Use the frame number modulo the loop period to create a perfect loop.
+      const loopTime = mod(frame, CONFIG.loopPeriod);
+      // Compute the global hue (color) for the current frame.
+      const globalHue = computeGlobalHue(loopTime);
+      // Draw a translucent rectangle over the entire canvas to fade previous frames.
+      ctx.fillStyle = `rgba(17, 17, 17, ${CONFIG.fadeAlpha})`;
+      ctx.fillRect(0, 0, width, height);
+      // Update and draw each particle.
+      particles.forEach(p => {
+        p.update(loopTime);
+        p.draw(ctx, globalHue);
+      });
+      frame++;
+    }
+    animate();
+  </script>
+</body>
+</html>

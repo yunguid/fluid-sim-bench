@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Raw‑WebGL2 Incompressible Fluid Sim</title>
+<style>
+  html,body{margin:0;overflow:hidden;background:#000;height:100%}
+  #c{display:block;width:100%;height:100%;touch-action:none;cursor:crosshair}
+  #ui{
+    position:fixed;top:8px;left:8px;z-index:10;font:12px/1 monospace;color:#eee;
+    background:rgba(0,0,0,.5);padding:6px 8px;border-radius:4px
+  }
+  #ui input[type=range]{width:140px;vertical-align:middle}
+  #ui label{display:block;margin:2px 0}
+  #ui button{margin-top:4px;width:100%;background:#222;color:#eee;border:0;padding:4px;border-radius:3px;cursor:pointer}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <label>Viscosity <input id="visc" type="range" min="0" max="0.02" step="0.0001" value="0.0007"></label>
+  <label>Force Scale <input id="force" type="range" min="0" max="2000" step="1" value="700"></label>
+  <label>Pressure Iters <input id="iters" type="range" min="1" max="120" step="1" value="40"></label>
+  <label>Resolution Scale <input id="res" type="range" min="0.25" max="1" step="0.05" value="0.5"></label>
+  <label><input id="wrap" type="checkbox"> Wrap Boundaries</label>
+  <button id="pause">Pause</button>
+  <label>Audio Input <input id="audio" type="file" accept="audio/*"></label>
+</div>
+
+<script type="module">
+/* ========= BASIC SETUP ========= */
+const canvas=document.getElementById('c');
+const gl=canvas.getContext('webgl2',{premultipliedAlpha:false,alpha:false,antialias:false});
+if(!gl)throw'WebGL2 required';
+if(!gl.getExtension('EXT_color_buffer_float'))throw'need EXT_color_buffer_float';
+const DPR=Math.min(window.devicePixelRatio,2);
+let simScale=parseFloat(document.getElementById('res').value);
+let paused=false;
+
+/* ========= UTILITY ========= */
+const VERT=`#version 300 es
+void main(){const vec2 p[6]=vec2[6](vec2(-1,-1),vec2(1,-1),vec2(-1,1),vec2(-1,1),vec2(1,-1),vec2(1,1));gl_Position=vec4(p[gl_VertexID],0,1);}
+`;
+function compile(type,src){const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);
+if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw gl.getShaderInfoLog(s);return s;}
+function prog(frag){const p=gl.createProgram();gl.attachShader(p,compile(gl.VERTEX_SHADER,VERT));
+gl.attachShader(p,compile(gl.FRAGMENT_SHADER,frag));gl.linkProgram(p);
+if(!gl.getProgramParameter(p,gl.LINK_STATUS))throw gl.getProgramInfoLog(p);return p;}
+function tex(w,h,filter=gl.NEAREST){const t=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,t);
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,filter);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,filter);
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA32F,w,h,0,gl.RGBA,gl.FLOAT,null);return t;}
+function fbo(w,h){const fb=gl.createFramebuffer();const c=tex(w,h);gl.bindFramebuffer(gl.FRAMEBUFFER,fb);
+gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,c,0);return{f:fb,t:c,w,h};}
+function swap(o){[o.read,o.write]=[o.write,o.read];}
+/* ========= SHADERS ========= */
+const DIV=`#version 300 es
+precision highp float;out vec4 o;in vec2 uv;uniform sampler2D vel;uniform vec2 dx;
+void main(){vec2 vL=texture(vel,uv-vec2(dx.x,0)).xy;vec2 vR=texture(vel,uv+vec2(dx.x,0)).xy;
+vec2 vB=texture(vel,uv-vec2(0,dx.y)).xy;vec2 vT=texture(vel,uv+vec2(0,dx.y)).xy;
+float div=0.5*(vR.x-vL.x+vT.y-vB.y);o=vec4(div,0,0,1);}`;
+const JACOBI=`#version 300 es
+precision highp float;out vec4 o;in vec2 uv;uniform sampler2D p;uniform sampler2D div;uniform vec2 dx;
+void main(){float pL=texture(p,uv-vec2(dx.x,0)).x;float pR=texture(p,uv+vec2(dx.x,0)).x;
+float pB=texture(p,uv-vec2(0,dx.y)).x;float pT=texture(p,uv+vec2(0,dx.y)).x;
+float d=texture(div,uv).x;o=vec4((pL+pR+pB+pT-d)*0.25,0,0,1);}`;
+const GRAD=`#version 300 es
+precision highp float;out vec4 o;in vec2 uv;uniform sampler2D vel;uniform sampler2D p;uniform vec2 dx;
+void main(){float pL=texture(p,uv-vec2(dx.x,0)).x;float pR=texture(p,uv+vec2(dx.x,0)).x;
+float pB=texture(p,uv-vec2(0,dx.y)).x;float pT=texture(p,uv+vec2(0,dx.y)).x;
+vec2 v=texture(vel,uv).xy-(vec2(pR-pL,pT-pB)*0.5);o=vec4(v,0,1);}`;
+const ADVECT=`#version 300 es
+precision highp float;out vec4 o;in vec2 uv;uniform sampler2D vel;uniform sampler2D src;
+uniform float dt;uniform vec2 dx;uniform float diss;
+void main(){vec2 p=uv-dt*texture(vel,uv).xy*dx;vec4 val=texture(src,p);o=val*diss;}`;
+const SPLAT=`#version 300 es
+precision highp float;out vec4 o;in vec2 uv;uniform sampler2D src;uniform vec2 point;uniform float radius;uniform vec3 force;
+void main(){vec2 d=uv-point;float r=exp(-dot(d,d)/(radius*radius));vec2 val=texture(src,uv).xy;val+=force.xy*r;o=vec4(val,0,1);}`;
+const DRAW=`#version 300 es
+precision highp float;out vec4 o;in vec2 uv;uniform sampler2D vel;
+uniform float t;void main(){vec2 v=texture(vel,uv).xy;float m=length(v);o=vec4(0.5+v*0.25,m,1);}';
+`;
+/* ========= PROGRAMS ========= */
+const progDiv=prog(`#version 300 es
+precision highp float;in vec2 vUV;out vec4 frag;`+DIV);
+const progJac=prog(`#version 300 es
+precision highp float;in vec2 vUV;out vec4 frag;`+JACOBI);
+const progGrad=prog(`#version 300 es
+precision highp float;in vec2 vUV;out vec4 frag;`+GRAD);
+const progAdvect=prog(`#version 300 es
+precision highp float;in vec2 vUV;out vec4 frag;`+ADVECT);
+const progSplat=prog(`#version 300 es
+precision highp float;in vec2 vUV;out vec4 frag;`+SPLAT);
+const progDraw=prog(`#version 300 es
+precision highp float;in vec2 vUV;out vec4 frag;`+DRAW);
+
+/* ========= BUFFERS ========= */
+let sim={};
+function resize(){
+  const W=Math.floor(canvas.clientWidth*simScale*DPR);
+  const H=Math.floor(canvas.clientHeight*simScale*DPR);
+  canvas.width=canvas.clientWidth*DPR;
+  canvas.height=canvas.clientHeight*DPR;
+  sim.vel={read:fbo(W,H),write:fbo(W,H)};
+  sim.div=fbo(W,H);sim.p={read:fbo(W,H),write:fbo(W,H)};
+  gl.viewport(0,0,canvas.width,canvas.height);
+}
+window.addEventListener('resize',resize);resize();
+
+/* ========= INTERACTION ========= */
+let mouseDown=false,mousePos=[0,0];
+canvas.addEventListener('pointerdown',e=>{mouseDown=true;updateMouse(e)});
+canvas.addEventListener('pointermove',e=>{updateMouse(e)});
+window.addEventListener('pointerup',()=>mouseDown=false);
+function updateMouse(e){const rect=canvas.getBoundingClientRect();
+mousePos=[(e.clientX-rect.left)/rect.width,(rect.height-(e.clientY-rect.top))/rect.height];}
+
+/* ========= AUDIO ========= */
+let analyser,fftData;
+document.getElementById('audio').addEventListener('change',e=>{
+  const file=e.target.files[0];if(!file)return;
+  const ctx=new AudioContext();const fr=new FileReader();
+  fr.onload=()=>ctx.decodeAudioData(fr.result,buf=>{
+    const src=ctx.createBufferSource();src.buffer=buf;
+    analyser=ctx.createAnalyser();analyser.fftSize=1024;
+    src.connect(analyser);analyser.connect(ctx.destination);src.start();
+    fftData=new Uint8Array(analyser.frequencyBinCount);
+  });fr.readAsArrayBuffer(file);
+});
+
+/* ========= SIMULATION STEP ========= */
+function step(dt){
+  const dx=[1/sim.vel.read.w,1/sim.vel.read.h];
+  // advect velocity
+  gl.useProgram(progAdvect);
+  setUniforms(progAdvect,{uVelocity:sim.vel.read.t,uSource:sim.vel.read.t,dt,dx, diss:0.99});
+  renderTo(sim.vel.write.f);swap(sim.vel);
+
+  // mouse / audio splat
+  if(mouseDown) splat(mousePos,[0,1]*document.getElementById('force').value);
+  if(analyser){analyser.getByteFrequencyData(fftData);
+    const avg=fftData.reduce((a,b)=>a+b,0)/fftData.length/255;
+    splat([0.5,0.5],[Math.sin(perfNow*0.01),Math.cos(perfNow*0.01)]*avg*300);
+  }
+
+  // divergence
+  gl.useProgram(progDiv);setUniforms(progDiv,{vel:sim.vel.read.t,dx});renderTo(sim.div.f);
+
+  // pressure solve
+  gl.useProgram(progJac);
+  for(let i=0;i<document.getElementById('iters').value;i++){
+    setUniforms(progJac,{p:sim.p.read.t,div:sim.div.t,dx});
+    renderTo(sim.p.write.f);swap(sim.p);
+  }
+  // gradient subtraction
+  gl.useProgram(progGrad);
+  setUniforms(progGrad,{vel:sim.vel.read.t,p:sim.p.read.t,dx});
+  renderTo(sim.vel.write.f);swap(sim.vel);
+}
+
+/* ========= RENDER ========= */
+function render(){
+  if(!paused){
+    step(0.016);
+    gl.useProgram(progDraw);
+    setUniforms(progDraw,{vel:sim.vel.read.t,t:perfNow*0.001});
+    gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+    gl.viewport(0,0,canvas.width,canvas.height);
+    gl.drawArrays(gl.TRIANGLES,0,6);
+  }
+  requestAnimationFrame(render);
+}
+requestAnimationFrame(render);
+
+/* ========= HELPERS ========= */
+function renderTo(fb){gl.bindFramebuffer(gl.FRAMEBUFFER,fb);gl.drawArrays(gl.TRIANGLES,0,6);}
+function setUniforms(p,obj){
+  gl.bindVertexArray(null);
+  for(const k in obj){
+    const loc=gl.getUniformLocation(p,k);
+    const v=obj[k];
+    if(v instanceof WebGLTexture){
+      const idx=0;gl.activeTexture(gl.TEXTURE0+idx);gl.bindTexture(gl.TEXTURE_2D,v);gl.uniform1i(loc,idx);
+    }else if(Array.isArray(v)){if(v.length==2)gl.uniform2f(loc,v[0],v[1]);}
+    else if(typeof v==='number')gl.uniform1f(loc,v);
+  }
+}
+function splat(point,force){
+  gl.useProgram(progSplat);
+  setUniforms(progSplat,{src:sim.vel.read.t,point,force:[force[0],force[1],0],radius:0.05});
+  renderTo(sim.vel.write.f);swap(sim.vel);
+}
+
+/* ========= UI ========= */
+document.getElementById('pause').onclick=()=>{paused=!paused;};
+document.getElementById('res').oninput=e=>{simScale=parseFloat(e.target.value);resize();};
+</script>
+</body>
+</html>

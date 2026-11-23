@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Da Vinci–Style Water Flowing Simulation</title>
+  <style>
+    /* A parchment-like background reminiscent of Leonardo’s sketches */
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #f5f0e1;
+      overflow: hidden;
+    }
+    canvas {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  
+  <!-- Include SimplexNoise from CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/simplex-noise/2.4.0/simplex-noise.min.js"></script>
+  <script>
+    /*************************************************
+     * Da Vinci–Style Water Flowing Simulation
+     *
+     * This simulation creates a virtual terrain via a
+     * noise-generated height map. Tiny particles (water
+     * droplets) are advected along the negative gradient
+     * (i.e. downhill) of the terrain, with a dash of
+     * turbulent twist. Their paths are rendered as delicate,
+     * pencil-like strokes that accumulate over time,
+     * reminiscent of Leonardo da Vinci’s studies of water.
+     *************************************************/
+
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    let width, height;
+
+    // Resize the canvas to fill the window.
+    function resize() {
+      width = canvas.width = window.innerWidth;
+      height = canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // Create a SimplexNoise instance.
+    const simplex = new SimplexNoise();
+
+    // The height function represents our virtual terrain.
+    // Combining multiple noise layers creates intricate "canals."
+    function heightFunction(x, y) {
+      const noiseScale = 0.005; // Adjust to change the size of terrain features.
+      let h = simplex.noise2D(x * noiseScale, y * noiseScale);
+      // Add a smoother, large-scale variation:
+      h += 0.3 * simplex.noise2D(x * noiseScale * 0.5, y * noiseScale * 0.5);
+      return h;
+    }
+
+    // Particle class: each particle represents a water droplet.
+    class Particle {
+      constructor() {
+        this.reset();
+      }
+      reset() {
+        // Start at a random position over the entire canvas.
+        this.x = Math.random() * width;
+        this.y = Math.random() * height;
+        this.prevX = this.x;
+        this.prevY = this.y;
+        this.life = 0;
+        // Randomize lifespan so that droplets have variable lengths.
+        this.maxLife = Math.random() * 300 + 200;
+      }
+      update() {
+        // Store current position as the previous position.
+        this.prevX = this.x;
+        this.prevY = this.y;
+
+        // Compute the gradient of the height function via finite differences.
+        const delta = 1;
+        const hRight = heightFunction(this.x + delta, this.y);
+        const hLeft  = heightFunction(this.x - delta, this.y);
+        const hDown  = heightFunction(this.x, this.y + delta);
+        const hUp    = heightFunction(this.x, this.y - delta);
+        const gradX = (hRight - hLeft) / (2 * delta);
+        const gradY = (hDown - hUp) / (2 * delta);
+
+        // Water flows downhill: move in the direction opposite to the gradient.
+        let vx = -gradX;
+        let vy = -gradY;
+
+        // Add a slight rotational perturbation (turbulence) using noise.
+        const angleTurb = simplex.noise2D(this.x * 0.01, this.y * 0.01) * Math.PI * 0.2;
+        const cosT = Math.cos(angleTurb);
+        const sinT = Math.sin(angleTurb);
+        const tvx = vx * cosT - vy * sinT;
+        const tvy = vx * sinT + vy * cosT;
+        vx = tvx;
+        vy = tvy;
+
+        // Normalize the velocity vector.
+        const mag = Math.sqrt(vx * vx + vy * vy);
+        if (mag > 0) {
+          vx /= mag;
+          vy /= mag;
+        }
+
+        // Determine speed. (Optionally, speed could also be a function of local slope.)
+        const speed = 2; 
+        this.x += vx * speed;
+        this.y += vy * speed;
+
+        this.life++;
+        // Reset particle if it lives too long or leaves the canvas.
+        if (this.life > this.maxLife || this.x < 0 || this.x > width || this.y < 0 || this.y > height) {
+          this.reset();
+        }
+      }
+      draw(ctx) {
+        // Draw a line from the previous position to the current position.
+        ctx.beginPath();
+        // Add a slight jitter to simulate a hand-drawn line.
+        const jitter = 0.5;
+        const startX = this.prevX + (Math.random() - 0.5) * jitter;
+        const startY = this.prevY + (Math.random() - 0.5) * jitter;
+        const endX = this.x + (Math.random() - 0.5) * jitter;
+        const endY = this.y + (Math.random() - 0.5) * jitter;
+        ctx.moveTo(startX, startY);
+        ctx.lineTo(endX, endY);
+        // Use a pencil-like, dark-brown stroke with some transparency.
+        ctx.strokeStyle = 'rgba(60, 40, 20, 0.7)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+    }
+
+    // Create a swarm of particles to represent flowing water.
+    const particles = [];
+    const numParticles = 3000;  // Increase this number for more visual complexity.
+    for (let i = 0; i < numParticles; i++) {
+      particles.push(new Particle());
+    }
+
+    // (Optional) Draw subtle contour lines of the terrain in the background.
+    // Uncomment the call to drawContours() below if you wish to see these guides.
+    function drawContours() {
+      const gridSize = 20; // Determines the resolution of contour lines.
+      ctx.strokeStyle = 'rgba(120, 100, 80, 0.1)';
+      ctx.lineWidth = 1;
+      for (let x = 0; x < width; x += gridSize) {
+        ctx.beginPath();
+        for (let y = 0; y < height; y += gridSize) {
+          const hVal = heightFunction(x, y);
+          // Map the height value to a small offset for a subtle contour effect.
+          const offset = (hVal + 1) * 5; 
+          const posX = x + offset;
+          const posY = y + offset;
+          if (y === 0) {
+            ctx.moveTo(posX, posY);
+          } else {
+            ctx.lineTo(posX, posY);
+          }
+        }
+        ctx.stroke();
+      }
+    }
+
+    // Animation loop.
+    let frameCount = 0;
+    function animate() {
+      // Fade previous strokes slowly with a nearly transparent overlay.
+      ctx.fillStyle = 'rgba(245, 240, 225, 0.03)';
+      ctx.fillRect(0, 0, width, height);
+
+      // Optionally, draw terrain contours every few frames.
+      // if (frameCount % 100 === 0) drawContours();
+
+      // Update and render each particle.
+      particles.forEach(p => {
+        p.update();
+        p.draw(ctx);
+      });
+      frameCount++;
+      requestAnimationFrame(animate);
+    }
+    animate();
+
+    // Interaction: move the mouse to disturb nearby water droplets.
+    canvas.addEventListener('mousemove', function(e) {
+      const rect = canvas.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+      particles.forEach(p => {
+        const dx = p.x - mouseX;
+        const dy = p.y - mouseY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 50) {
+          // Gently push the particle away from the mouse.
+          p.x += dx * 0.1;
+          p.y += dy * 0.1;
+        }
+      });
+    });
+  </script>
+</body>
+</html>
