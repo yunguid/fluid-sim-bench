@@ -23,7 +23,7 @@ SDK = os.path.join(BENCH, "sdk")
 KEYS = os.path.expanduser("~/.config/fluid-bench/keys.env")
 W, H = 1280, 720
 CAPTURE_SECONDS = 14
-OUTPUT_LIMITS = {}   # OpenRouter model id -> max output tokens, filled at start
+OUTPUT_LIMITS = {}   # OpenRouter model id -> the provider's max output tokens, filled at start
 
 
 def load_output_limits():
@@ -32,9 +32,9 @@ def load_output_limits():
             for m in json.load(r)["data"]:
                 lim = (m.get("top_provider") or {}).get("max_completion_tokens")
                 if lim:
-                    OUTPUT_LIMITS[m["id"]] = min(int(lim), 128000)
+                    OUTPUT_LIMITS[m["id"]] = int(lim)
     except Exception as e:
-        print(f"warning: could not read OpenRouter output limits ({e}); using 128000", file=sys.stderr)
+        print(f"warning: could not read OpenRouter output limits ({e}); sending no max_tokens", file=sys.stderr)
 
 
 # ---------------------------------------------------------------- utilities
@@ -132,7 +132,7 @@ class Status:
             for j in self.jobs:
                 by_model.setdefault(j.slug, []).append(j)
             for slug, js in by_model.items():
-                cells = "  ".join(f"t{j.trial}:{j.state:<10}" for j in js)
+                cells = "  ".join(f"t{j.trial}:{(j.state if j.state != 'generating' else f'gen {j.progress // 1000}k'):<10}" for j in js)
                 cost = sum(j.meta.get("cost") or 0 for j in js)
                 print(f"  {slug:<28} {cells}  ${cost:.3f}")
             sys.stdout.flush()
@@ -151,12 +151,83 @@ class Job:
         self.meta.update({"slug": self.slug, "model": model["model"],
                           "provider": model["provider"], "trial": trial})
         self.state = "queued"
+        self.progress = 0          # characters streamed so far
 
     def save(self):
         write_json(self.meta_path, self.meta)
 
     def path(self, name):
         return os.path.join(self.dir, name)
+
+
+# A request fails only when the connection goes silent for this long. There is
+# no limit on total generation time: a model may think as long as it wants.
+API_IDLE_SECONDS = 900
+LOCAL_IDLE_SECONDS = 1800
+
+
+def stream_lines(url, body, headers, idle):
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
+                                 headers={"Content-Type": "application/json", **headers})
+    with urllib.request.urlopen(req, timeout=idle) as r:   # timeout applies to each read
+        for raw in r:
+            yield raw.decode("utf-8", "replace").strip()
+
+
+def stream_openai(job, url, body, headers):
+    """OpenAI-style SSE stream (OpenRouter). Returns (text, reasoning, final_chunk_info)."""
+    text, reasoning, info = [], [], {}
+    for line in stream_lines(url, dict(body, stream=True), headers, API_IDLE_SECONDS):
+        if not line.startswith("data:"):
+            continue                       # ": OPENROUTER PROCESSING" keep-alives, blank lines
+        data = line[5:].strip()
+        if data == "[DONE]":
+            break
+        chunk = json.loads(data)
+        if "error" in chunk:
+            raise RuntimeError(json.dumps(chunk["error"])[:500])
+        for ch in chunk.get("choices", []):
+            d = ch.get("delta") or {}
+            if d.get("content"):
+                text.append(d["content"])
+            if d.get("reasoning"):
+                reasoning.append(d["reasoning"])
+            if ch.get("finish_reason"):
+                info["finish_reason"] = ch["finish_reason"]
+        if chunk.get("usage"):
+            info["usage"] = chunk["usage"]
+        if chunk.get("provider"):
+            info["provider"] = chunk["provider"]
+        job.progress = sum(map(len, text)) + sum(map(len, reasoning))
+    return "".join(text), "".join(reasoning), info
+
+
+def stream_ollama(job, url, body):
+    text, reasoning, final = [], [], {}
+    for line in stream_lines(url, dict(body, stream=True), {}, LOCAL_IDLE_SECONDS):
+        if not line:
+            continue
+        chunk = json.loads(line)
+        if chunk.get("error"):
+            raise RuntimeError(chunk["error"][:500])
+        msg = chunk.get("message") or {}
+        if msg.get("content"):
+            text.append(msg["content"])
+        if msg.get("thinking"):
+            reasoning.append(msg["thinking"])
+        job.progress = sum(map(len, text)) + sum(map(len, reasoning))
+        if chunk.get("done"):
+            final = chunk
+    return "".join(text), "".join(reasoning), final
+
+
+def ollama_context_length(base_url, model):
+    """The model's full trained context window, from /api/show."""
+    try:
+        info = http_json(base_url + "/api/show", {"model": model}, {}, timeout=60).get("model_info", {})
+        return max(int(v) for k, v in info.items() if k.endswith(".context_length"))
+    except Exception:
+        return 131072
 
 
 def generate(job, prompt):
@@ -172,38 +243,38 @@ def generate(job, prompt):
         try:
             if p["kind"] == "openai":
                 body = {"model": m["model"], "messages": [{"role": "user", "content": prompt}],
-                        "max_tokens": OUTPUT_LIMITS.get(m["model"], 128000), "usage": {"include": True}}
-                hdr = {"Authorization": "Bearer " + os.environ[p["key_env"]],
-                       "X-Title": "fluid-sim-bench"}
-                r = http_json(p["base_url"] + "/chat/completions", body, hdr, timeout=1800)
-                if "error" in r:
-                    raise RuntimeError(json.dumps(r["error"])[:500])
-                text = r["choices"][0]["message"].get("content") or ""
-                u = r.get("usage", {}) or {}
+                        "usage": {"include": True}}
+                if m["model"] in OUTPUT_LIMITS:
+                    body["max_tokens"] = OUTPUT_LIMITS[m["model"]]
+                hdr = {"Authorization": "Bearer " + os.environ[p["key_env"]], "X-Title": "fluid-sim-bench"}
+                text, reasoning, info = stream_openai(job, p["base_url"] + "/chat/completions", body, hdr)
+                u = info.get("usage") or {}
                 job.meta.update({"prompt_tokens": u.get("prompt_tokens"),
                                  "completion_tokens": u.get("completion_tokens"),
                                  "reasoning_tokens": (u.get("completion_tokens_details") or {}).get("reasoning_tokens"),
                                  "cost": u.get("cost"),
-                                 "finish_reason": r["choices"][0].get("finish_reason"),
-                                 "max_tokens": body["max_tokens"],
-                                 "served_by": r.get("provider")})
+                                 "finish_reason": info.get("finish_reason"),
+                                 "max_tokens": body.get("max_tokens"),
+                                 "served_by": info.get("provider")})
             else:
+                ctx = ollama_context_length(p["base_url"], m["model"])
                 body = {"model": m["model"], "messages": [{"role": "user", "content": prompt}],
-                        "stream": False, "options": {"num_ctx": 65536}}
-                r = http_json(p["base_url"] + "/api/chat", body, {}, timeout=7200)
-                text = r["message"].get("content") or ""
-                job.meta["finish_reason"] = r.get("done_reason")
+                        "options": {"num_ctx": ctx, "num_predict": -1}}
+                text, reasoning, r = stream_ollama(job, p["base_url"] + "/api/chat", body)
                 job.meta.update({"prompt_tokens": r.get("prompt_eval_count"),
                                  "completion_tokens": r.get("eval_count"), "cost": 0.0,
+                                 "num_ctx": ctx, "finish_reason": r.get("done_reason"),
                                  "tokens_per_s": round(r["eval_count"] / (r["eval_duration"] / 1e9), 1)
                                  if r.get("eval_duration") else None})
             break
-        except Exception as e:  # network errors, 5xx, rate limits
+        except Exception as e:  # dropped connections, 5xx, rate limits
             last_err = f"{type(e).__name__}: {e}"
-            time.sleep(10 * (attempt + 1))
+            time.sleep(15 * (attempt + 1))
     else:
         job.meta.update({"stage": "generate", "error": last_err})
         return False
+    if reasoning:
+        open(job.path("reasoning.md"), "w").write(reasoning)
     job.meta["gen_seconds"] = round(time.time() - t0, 1)
     open(job.path("response.md"), "w").write(text)
     code = extract_code(text)
@@ -261,11 +332,22 @@ def capture(job, display):
         time.sleep(1.0)
         runlog = open(job.path("run.log"), "w")
         app = subprocess.Popen([job.path("app")], cwd=job.dir, env=env, stdout=runlog, stderr=subprocess.STDOUT)
-        time.sleep(2.0)
-        if app.poll() is not None:
-            job.meta.update({"run_ok": False, "stage": "run", "exit_code": app.returncode,
-                             "error": f"exited at startup with code {app.returncode}"})
+        t_start = time.time()
+        while time.time() - t_start < 30:          # wait for a visible window
+            if app.poll() is not None:
+                job.meta.update({"run_ok": False, "stage": "run", "exit_code": app.returncode,
+                                 "error": f"exited at startup with code {app.returncode}"})
+                return False
+            r = subprocess.run(["xdotool", "search", "--onlyvisible", "--name", "."], env=env,
+                               capture_output=True, text=True)
+            if r.stdout.strip():
+                break
+            time.sleep(0.5)
+        else:
+            job.meta.update({"run_ok": False, "stage": "run", "error": "no window within 30 s"})
             return False
+        job.meta["startup_seconds"] = round(time.time() - t_start, 1)
+        time.sleep(2.0)                             # let the first frames render
         rec = subprocess.Popen(["ffmpeg", "-loglevel", "error", "-y", "-f", "x11grab", "-video_size", f"{W}x{H}",
                                 "-framerate", "30", "-i", f":{display}", "-t", str(CAPTURE_SECONDS),
                                 "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "26", "-preset", "veryfast",
