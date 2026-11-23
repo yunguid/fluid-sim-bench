@@ -42,6 +42,20 @@ Write a real-time 2D fluid simulation in C++17, as one file named `main.cpp`.
 6. **Robust.** No crashes, no NaNs blowing up the screen, no sokol validation
    errors, and it must run until the window is closed.
 
+## How your program is tested
+
+- It is built with the command above, which must finish within 5 minutes.
+- It runs in a sandbox with no network, on a 1280×720 virtual screen using
+  Mesa's software OpenGL renderer (llvmpipe), so frame rates are far lower
+  than on a GPU. Size the simulation grid accordingly.
+- A window must appear within 30 seconds. After 2 more seconds, 15 seconds
+  are recorded. The program must still be running when the recording ends.
+- At second 5 of the recording the left mouse button is held down and the
+  cursor traces a figure-eight through the middle of the window for about
+  5 seconds, then released. The ImGui panel should stay near the top-left so
+  it does not catch this drag.
+- People compare the recordings side by side.
+
 ## Output
 
 Reply with one ```cpp code block containing the complete `main.cpp`, and

@@ -73,6 +73,7 @@
       <button data-tab="build" aria-pressed="false">Build log</button>
       <button data-tab="run" aria-pressed="false">Run log</button>
       <button data-tab="response" aria-pressed="false">Full response</button>
+      <button data-tab="reasoning" aria-pressed="false">Reasoning</button>
       <button data-tab="meta" aria-pressed="false">Details</button>
     </div>
     <div id="dlg-content"></div>
@@ -121,8 +122,9 @@ function render() {
             : (a, b) => b.working - a.working || a.slug.localeCompare(b.slug));
   const ok = entries.filter(e => e.status === "ok" && e.run_ok).length;
   const failed = entries.filter(e => e.status === "failed").length;
+  const infra = entries.filter(e => e.status === "infra-error").length;
   const cost = entries.reduce((s, e) => s + (e.cost || 0), 0);
-  $("#stats").textContent = `${ok} working · ${failed} failed · ${entries.length - ok - failed} pending · $${cost.toFixed(2)} · updated ${state.data.updated.replace("T", " ")}`;
+  $("#stats").textContent = `${ok} working · ${failed} failed · ${infra} infra · ${entries.length - ok - failed - infra} pending · $${cost.toFixed(2)} · updated ${state.data.updated.replace("T", " ")}`;
 
   const keep = e => state.filter === "all" || (state.filter === "ok" ? e.status === "ok" && e.run_ok : e.status === "failed");
   $("#main").innerHTML = models.map(m => {
@@ -142,9 +144,10 @@ function render() {
 function card(e) {
   const d = base() + e.dir + "/";
   const working = e.status === "ok" && e.run_ok;
-  const pending = !e.status;
-  const label = pending ? "pending" : working ? "runs" : `failed: ${e.stage || "?"}`;
-  const cls = pending ? "pending" : working ? "ok" : "bad";
+  const infra = e.status === "infra-error" || e.status === "budget-skip";
+  const pending = !e.status || infra || (e.status || "").endsWith("-done");
+  const label = working ? "runs" : infra ? e.status : pending ? (e.status || "pending") : `failed: ${e.stage || "?"}`;
+  const cls = working ? "ok" : pending ? "pending" : "bad";
   const media = e.run_ok != null && e.build_ok
     ? `<video src="${d}capture.mp4" poster="${d}poster.jpg" muted loop playsinline preload="none"></video>`
     : `<div class="fail">${esc(e.error || (pending ? "waiting…" : "no output"))}</div>`;
@@ -152,6 +155,7 @@ function card(e) {
     <div class="media">${media}<span class="badge ${cls}">t${e.trial} · ${esc(label)}</span></div>
     <div class="info"><span>${e.lines ?? "–"} lines</span><span>${fmt.secs(e.gen_seconds)}</span>
       <span>${fmt.cost(e.cost)}</span>${e.tokens_per_s ? `<span>${e.tokens_per_s} tok/s</span>` : ""}
+      ${e.reasoning_tokens ? `<span>${Math.round(e.reasoning_tokens / 1000)}k reasoning</span>` : ""}
       ${e.validation_errors ? `<span style="color:var(--warn)">${e.validation_errors} validation errs</span>` : ""}</div>
   </div>`;
 }
@@ -177,7 +181,7 @@ async function showTab(tab) {
       `<span>${esc(k)}</span><b>${esc(typeof v === "object" ? JSON.stringify(v) : v)}</b>`).join("")}</div>`;
     return;
   }
-  const file = { code: "main.cpp", build: "build.log", run: "run.log", response: "response.md" }[tab];
+  const file = { code: "main.cpp", build: "build.log", run: "run.log", response: "response.md", reasoning: "reasoning.md" }[tab];
   const text = await fetch(d + file, { cache: "no-store" }).then(r => r.ok ? r.text() : "(not available)").catch(() => "(not available)");
   $("#dlg-content").innerHTML = `<pre>${esc(text || "(empty)")}</pre>`;
 }
