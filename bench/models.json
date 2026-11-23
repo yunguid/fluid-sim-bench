@@ -1,0 +1,29 @@
+{
+  "providers": {
+    "openrouter": { "kind": "openai", "base_url": "https://openrouter.ai/api/v1", "key_env": "OPENROUTER_API_KEY", "concurrency": 8 },
+    "ollama":     { "kind": "ollama", "base_url": "http://localhost:11434", "concurrency": 1 }
+  },
+  "models": [
+    { "slug": "claude-fable-5.2",      "provider": "openrouter", "model": "anthropic/claude-fable-5.2" },
+    { "slug": "claude-haiku-5.5",      "provider": "openrouter", "model": "anthropic/claude-haiku-5.5" },
+    { "slug": "gpt-6.2-astra",         "provider": "openrouter", "model": "openai/gpt-6.2-astra" },
+    { "slug": "gemini-4-neon",         "provider": "openrouter", "model": "google/gemini-4-neon" },
+    { "slug": "gemini-4-hydrogen",     "provider": "openrouter", "model": "google/gemini-4-hydrogen" },
+    { "slug": "grok-4.7",              "provider": "openrouter", "model": "x-ai/grok-4.7" },
+    { "slug": "glm-5.3-prime",         "provider": "openrouter", "model": "z-ai/glm-5.3-prime" },
+    { "slug": "glm-5.3-flash",         "provider": "openrouter", "model": "z-ai/glm-5.3-flash" },
+    { "slug": "kimi-k3.1-pro",         "provider": "openrouter", "model": "moonshotai/kimi-k3.1-pro" },
+    { "slug": "kimi-k3",               "provider": "openrouter", "model": "moonshotai/kimi-k3" },
+    { "slug": "qwen4-max",             "provider": "openrouter", "model": "qwen/qwen4-max" },
+    { "slug": "deepseek-v4.1-flash",   "provider": "openrouter", "model": "deepseek/deepseek-v4.1-flash" },
+    { "slug": "minimax-m3",            "provider": "openrouter", "model": "minimax/minimax-m3" },
+    { "slug": "mistral-large-4",       "provider": "openrouter", "model": "mistralai/mistral-large-4-0" },
+
+    { "slug": "local-devstral-small-2-24b", "provider": "ollama", "model": "devstral-small-2:24b" },
+    { "slug": "local-qwen3.6-27b",          "provider": "ollama", "model": "qwen3.6:27b" },
+    { "slug": "local-qwen3-coder-30b",      "provider": "ollama", "model": "qwen3-coder:30b" },
+    { "slug": "local-gemma4-31b",           "provider": "ollama", "model": "gemma4:31b" },
+    { "slug": "local-huihui-qwen-27b",      "provider": "ollama", "model": "huihui-4090:latest" },
+    { "slug": "local-gpt-oss-120b",         "provider": "ollama", "model": "gpt-oss:120b" }
+  ]
+}

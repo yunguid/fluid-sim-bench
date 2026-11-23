@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fluid Sim Bench</title>
+<style>
+  :root {
+    --bg: #0b0d10; --panel: #14171c; --line: #23272e; --text: #e6e8eb; --dim: #8b929c;
+    --ok: #3ccf91; --bad: #f2555a; --warn: #f0b429; --accent: #6aa8ff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { position: sticky; top: 0; z-index: 2; background: rgba(11,13,16,.92); backdrop-filter: blur(8px);
+           border-bottom: 1px solid var(--line); padding: 12px 16px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  h1 { font-size: 16px; margin: 0 8px 0 0; letter-spacing: .02em; }
+  select, button, input { background: var(--panel); color: var(--text); border: 1px solid var(--line);
+                          border-radius: 6px; padding: 6px 10px; font: inherit; }
+  button { cursor: pointer; } button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+  .stats { color: var(--dim); margin-left: auto; font-variant-numeric: tabular-nums; }
+  main { padding: 16px; }
+  .row { margin-bottom: 22px; }
+  .row h2 { font-size: 13px; font-weight: 600; margin: 0 0 8px; display: flex; gap: 10px; align-items: baseline; }
+  .row h2 .meta { color: var(--dim); font-weight: 400; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; cursor: pointer; }
+  .card:hover { border-color: #3a404a; }
+  .media { aspect-ratio: 16/9; background: #000; position: relative; display: grid; place-items: center; }
+  .media img, .media video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .media .fail { color: var(--dim); font-size: 12px; padding: 12px; text-align: center; }
+  .badge { position: absolute; top: 8px; left: 8px; font-size: 11px; padding: 2px 7px; border-radius: 99px;
+           background: rgba(0,0,0,.65); border: 1px solid var(--line); }
+  .badge.ok { color: var(--ok); } .badge.bad { color: var(--bad); } .badge.pending { color: var(--warn); }
+  .info { padding: 8px 10px; display: flex; gap: 10px; color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; flex-wrap: wrap; }
+  dialog { width: min(1200px, 96vw); max-height: 94vh; background: var(--panel); color: var(--text);
+           border: 1px solid var(--line); border-radius: 12px; padding: 0; }
+  dialog::backdrop { background: rgba(0,0,0,.7); }
+  .dlg-head { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  .dlg-body { padding: 14px; overflow: auto; max-height: calc(94vh - 50px); }
+  .dlg-body video { width: 100%; border-radius: 8px; background: #000; }
+  .tabs { display: flex; gap: 6px; margin: 12px 0 8px; }
+  pre { background: #0a0c0f; border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow: auto;
+        font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; max-height: 60vh; white-space: pre; }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: 12px; color: var(--dim); }
+  .kv b { color: var(--text); font-weight: 500; }
+  .empty { color: var(--dim); padding: 40px; text-align: center; }
+  @media (max-width: 640px) { header { gap: 8px; } .stats { margin-left: 0; width: 100%; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Fluid Sim Bench</h1>
+  <select id="run" aria-label="Run"></select>
+  <button data-filter="all" aria-pressed="true">All</button>
+  <button data-filter="ok" aria-pressed="false">Working</button>
+  <button data-filter="failed" aria-pressed="false">Failed</button>
+  <select id="sort" aria-label="Sort">
+    <option value="score">Sort: most working</option>
+    <option value="name">Sort: name</option>
+    <option value="cost">Sort: cost</option>
+  </select>
+  <span class="stats" id="stats"></span>
+</header>
+<main id="main"><div class="empty">Loading…</div></main>
+
+<dialog id="dlg">
+  <div class="dlg-head"><strong id="dlg-title"></strong><button id="dlg-close">Close</button></div>
+  <div class="dlg-body">
+    <video id="dlg-video" controls loop muted playsinline></video>
+    <div class="tabs">
+      <button data-tab="code" aria-pressed="true">main.cpp</button>
+      <button data-tab="build" aria-pressed="false">Build log</button>
+      <button data-tab="run" aria-pressed="false">Run log</button>
+      <button data-tab="response" aria-pressed="false">Full response</button>
+      <button data-tab="meta" aria-pressed="false">Details</button>
+    </div>
+    <div id="dlg-content"></div>
+  </div>
+</dialog>
+
+<script>
+const $ = s => document.querySelector(s);
+const state = { run: null, data: null, filter: "all", sort: "score" };
+const base = () => `../results/${state.run}/`;
+const fmt = {
+  cost: c => c == null ? "–" : c === 0 ? "local" : `$${c.toFixed(3)}`,
+  secs: s => s == null ? "–" : s < 90 ? `${Math.round(s)}s` : `${(s / 60).toFixed(1)}m`,
+};
+const esc = s => String(s ?? "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+
+async function loadRuns() {
+  const runs = await fetch("../results/runs.json", { cache: "no-store" }).then(r => r.json()).catch(() => []);
+  const sel = $("#run");
+  sel.innerHTML = runs.map(r => `<option>${esc(r)}</option>`).join("");
+  state.run = new URLSearchParams(location.search).get("run") || runs[0];
+  if (state.run) sel.value = state.run;
+  sel.onchange = () => { state.run = sel.value; history.replaceState(null, "", `?run=${state.run}`); load(); };
+  if (!state.run) { $("#main").innerHTML = `<div class="empty">No runs yet.</div>`; return; }
+  load();
+}
+
+async function load() {
+  state.data = await fetch(base() + "index.json", { cache: "no-store" }).then(r => r.json());
+  render();
+}
+
+function render() {
+  const entries = state.data.entries;
+  const groups = {};
+  for (const e of entries) (groups[e.slug] ??= []).push(e);
+  let models = Object.entries(groups).map(([slug, es]) => ({
+    slug, es: es.sort((a, b) => a.trial - b.trial),
+    working: es.filter(e => e.status === "ok" && e.run_ok).length,
+    cost: es.reduce((s, e) => s + (e.cost || 0), 0),
+    local: es[0].provider === "ollama",
+    model: es[0].model,
+  }));
+  models.sort(state.sort === "name" ? (a, b) => a.slug.localeCompare(b.slug)
+            : state.sort === "cost" ? (a, b) => b.cost - a.cost
+            : (a, b) => b.working - a.working || a.slug.localeCompare(b.slug));
+  const ok = entries.filter(e => e.status === "ok" && e.run_ok).length;
+  const failed = entries.filter(e => e.status === "failed").length;
+  const cost = entries.reduce((s, e) => s + (e.cost || 0), 0);
+  $("#stats").textContent = `${ok} working · ${failed} failed · ${entries.length - ok - failed} pending · $${cost.toFixed(2)} · updated ${state.data.updated.replace("T", " ")}`;
+
+  const keep = e => state.filter === "all" || (state.filter === "ok" ? e.status === "ok" && e.run_ok : e.status === "failed");
+  $("#main").innerHTML = models.map(m => {
+    const cards = m.es.filter(keep).map(card).join("");
+    if (!cards) return "";
+    return `<section class="row"><h2>${esc(m.slug)}<span class="meta">${esc(m.model)} · ${m.working}/${m.es.length} working · ${m.local ? "local" : fmt.cost(m.cost)}</span></h2>
+            <div class="cards">${cards}</div></section>`;
+  }).join("") || `<div class="empty">Nothing matches.</div>`;
+  document.querySelectorAll(".card").forEach(el => {
+    const e = entries.find(x => x.dir === el.dataset.dir);
+    el.onclick = () => open(e);
+    const v = el.querySelector("video");
+    if (v) { el.onmouseenter = () => v.play().catch(() => {}); el.onmouseleave = () => v.pause(); }
+  });
+}
+
+function card(e) {
+  const d = base() + e.dir + "/";
+  const working = e.status === "ok" && e.run_ok;
+  const pending = !e.status;
+  const label = pending ? "pending" : working ? "runs" : `failed: ${e.stage || "?"}`;
+  const cls = pending ? "pending" : working ? "ok" : "bad";
+  const media = e.run_ok != null && e.build_ok
+    ? `<video src="${d}capture.mp4" poster="${d}poster.jpg" muted loop playsinline preload="none"></video>`
+    : `<div class="fail">${esc(e.error || (pending ? "waiting…" : "no output"))}</div>`;
+  return `<div class="card" data-dir="${esc(e.dir)}">
+    <div class="media">${media}<span class="badge ${cls}">t${e.trial} · ${esc(label)}</span></div>
+    <div class="info"><span>${e.lines ?? "–"} lines</span><span>${fmt.secs(e.gen_seconds)}</span>
+      <span>${fmt.cost(e.cost)}</span>${e.tokens_per_s ? `<span>${e.tokens_per_s} tok/s</span>` : ""}
+      ${e.validation_errors ? `<span style="color:var(--warn)">${e.validation_errors} validation errs</span>` : ""}</div>
+  </div>`;
+}
+
+let current = null;
+function open(e) {
+  current = e;
+  const d = base() + e.dir + "/";
+  $("#dlg-title").textContent = `${e.slug} · trial ${e.trial}`;
+  const v = $("#dlg-video");
+  v.style.display = e.build_ok && e.run_ok != null ? "" : "none";
+  v.src = e.build_ok ? d + "capture.mp4" : "";
+  showTab("code");
+  $("#dlg").showModal();
+  v.play().catch(() => {});
+}
+
+async function showTab(tab) {
+  document.querySelectorAll("[data-tab]").forEach(b => b.setAttribute("aria-pressed", b.dataset.tab === tab));
+  const d = base() + current.dir + "/";
+  if (tab === "meta") {
+    $("#dlg-content").innerHTML = `<div class="kv">${Object.entries(current).map(([k, v]) =>
+      `<span>${esc(k)}</span><b>${esc(typeof v === "object" ? JSON.stringify(v) : v)}</b>`).join("")}</div>`;
+    return;
+  }
+  const file = { code: "main.cpp", build: "build.log", run: "run.log", response: "response.md" }[tab];
+  const text = await fetch(d + file, { cache: "no-store" }).then(r => r.ok ? r.text() : "(not available)").catch(() => "(not available)");
+  $("#dlg-content").innerHTML = `<pre>${esc(text || "(empty)")}</pre>`;
+}
+
+document.querySelectorAll("[data-tab]").forEach(b => b.onclick = () => showTab(b.dataset.tab));
+document.querySelectorAll("[data-filter]").forEach(b => b.onclick = () => {
+  state.filter = b.dataset.filter;
+  document.querySelectorAll("[data-filter]").forEach(x => x.setAttribute("aria-pressed", x === b));
+  render();
+});
+$("#sort").onchange = e => { state.sort = e.target.value; render(); };
+$("#dlg-close").onclick = () => { $("#dlg-video").pause(); $("#dlg").close(); };
+$("#dlg").addEventListener("close", () => $("#dlg-video").pause());
+setInterval(() => state.run && load().catch(() => {}), 15000);   // live while a run is going
+loadRuns();
+</script>
+</body>
+</html>

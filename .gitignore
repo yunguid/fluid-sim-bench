@@ -1,4 +1,4 @@
 .DS_Store
-results/raw/
-*.o
 build/
+results/
+*.o
