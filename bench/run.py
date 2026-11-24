@@ -27,6 +27,7 @@ IMAGE = "fluid-bench-sandbox"
 # Rules (bench/RULES.md). There is deliberately no limit on generation time.
 API_IDLE_SECONDS = 900        # silence on an API stream before it counts as stalled
 LOCAL_IDLE_SECONDS = 1800     # the same for a local model (large models load slowly)
+LOCAL_NUM_CTX = 65536     # local context window: fits the model and its cache on the 4090 (RULES.md)
 INFRA_RETRIES = 5             # attempts after an infrastructure failure
 INFRA_BACKOFF = [30, 60, 120, 240, 480]
 
@@ -206,6 +207,7 @@ def ollama_prepare(base_url, model):
     with _ollama_lock:
         info = http_json(base_url + "/api/show", {"model": model}, {}, timeout=120).get("model_info", {})
         ctx = max([int(v) for k, v in info.items() if k.endswith(".context_length")] or [131072])
+        ctx = min(ctx, LOCAL_NUM_CTX)
         if _ollama_loaded != model:
             http_json(base_url + "/api/generate", {"model": model, "keep_alive": "60m",
                                                    "options": {"num_ctx": ctx}}, {}, timeout=LOCAL_IDLE_SECONDS)
