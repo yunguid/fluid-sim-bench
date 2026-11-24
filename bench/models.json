@@ -6,7 +6,7 @@
   "models": [
     {"slug": "claude-fable-5.2", "provider": "openrouter", "model": "anthropic/claude-fable-5.2", "pin": "anthropic", "max_tokens": 128000, "effort_default": "high"},
     {"slug": "claude-haiku-5.5", "provider": "openrouter", "model": "anthropic/claude-haiku-5.5", "pin": "anthropic", "max_tokens": 128000, "effort_default": "medium"},
-    {"slug": "gpt-6.2-astra", "provider": "openrouter", "model": "openai/gpt-6.2-astra", "pin": "openai", "max_tokens": 128000, "effort_default": "medium"},
+    {"slug": "gpt-6.2-astra", "provider": "openrouter", "model": "openai/gpt-6.2-astra", "pin": "openai", "max_tokens": 128000, "effort": "max"},
     {"slug": "gemini-4-neon", "provider": "openrouter", "model": "google/gemini-4-neon", "pin": "google-vertex/global", "max_tokens": 943718, "effort": "xhigh"},
     {"slug": "gemini-4-hydrogen", "provider": "openrouter", "model": "google/gemini-4-hydrogen", "pin": "google-vertex/global", "max_tokens": 943718, "effort": "xhigh"},
     {"slug": "grok-4.7", "provider": "openrouter", "model": "x-ai/grok-4.7", "pin": "xai", "max_tokens": 450000, "effort": "xhigh"},
