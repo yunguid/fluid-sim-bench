@@ -580,6 +580,9 @@ def write_manifest(run_dir, cfg, models, prompt, args):
 
 def write_index(run_dir, jobs, prompt):
     entries = [dict(j.meta, dir=os.path.relpath(j.dir, run_dir)) for j in jobs]
+    mine = {e["dir"] for e in entries}           # keep entries of models this pass did not select
+    old = read_json(os.path.join(run_dir, "index.json"), {}) or {}
+    entries += [e for e in old.get("entries", []) if e.get("dir") not in mine]
     write_json(os.path.join(run_dir, "index.json"),
                {"run": RUN, "updated": datetime.datetime.now().isoformat(timespec="seconds"),
                 "prompt": prompt, "entries": entries})
