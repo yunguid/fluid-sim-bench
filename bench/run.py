@@ -277,17 +277,18 @@ def stitch(parts):
     return out
 
 
-def generate(job, prompt):
+def generate(job, prompt, messages=None):
     """Returns "ok", "failed" (the model's answer is unusable) or "infra-error".
 
     There is no length limit: when a response stops at the output limit, the
-    conversation continues until the model finishes on its own."""
+    conversation continues until the model finishes on its own. A repair round
+    passes its own conversation in `messages`."""
     if os.path.exists(job.path("main.cpp")):
         return "ok"
     job.state = "generating"
     for k in ("stage", "error", "exit_code", "run_ok", "build_ok", "infra_attempts", "turns"):
         job.meta.pop(k, None)
-    messages = [{"role": "user", "content": prompt}]
+    messages = list(messages or [{"role": "user", "content": prompt}])
     texts, reasonings, turns = [], [], []
     no_progress = 0
     t_start = time.time()
@@ -397,6 +398,116 @@ def run_app(job):
     return res["ok"]
 
 
+# ---------------------------------------------------------------- repair
+
+class Round:
+    """One repair round of a job, in the job's folder as rN/. It has the same
+    interface as Job, so generate(), build() and run_app() work on it."""
+
+    def __init__(self, job, n):
+        self.parent, self.n = job, n
+        self.model, self.provider, self.trial, self.slug = job.model, job.provider, job.trial, job.slug
+        self.dir = os.path.join(job.dir, f"r{n}")
+        os.makedirs(self.dir, exist_ok=True)
+        self.meta_path = os.path.join(self.dir, "meta.json")
+        self.meta = read_json(self.meta_path, {}) or {}
+        self.meta.update({"round": n, "effort": job.meta.get("effort")})
+
+    state = property(lambda self: self.parent.state,
+                     lambda self, v: setattr(self.parent, "state", f"r{self.n} {v}"))
+    progress = property(lambda self: self.parent.progress,
+                        lambda self, v: setattr(self.parent, "progress", v))
+    save = Job.save
+    path = Job.path
+
+
+NO_CODE = ("Your reply did not contain the program. Reply with the complete `main.cpp` in one "
+           "```cpp code block. The code must be in your reply itself, not only in your reasoning.")
+BUILD_FAILED = ("Your `main.cpp` did not build. These are the compiler messages:\n\n```\n{log}\n```\n\n"
+                "Fix every error and reply with the complete corrected `main.cpp` in one ```cpp code block.")
+RUN_FAILED = ("Your `main.cpp` built, but failed the browser test described in the task: {error}\n\n"
+              "Browser console output (the last lines):\n\n```\n{console}\n```\n\n"
+              "Fix the problem and reply with the complete corrected `main.cpp` in one ```cpp code block.")
+SAME_ERROR_LIMIT = 3    # the same failure this many times in one job -> stuck
+
+
+def feedback(sub):
+    """What the model is told about its failed attempt: the real errors, nothing else."""
+    stage = sub.meta.get("stage")
+    if stage == "generate" or not os.path.exists(sub.path("main.cpp")):
+        return NO_CODE
+    if stage == "build":
+        log = open(sub.path("build.log"), errors="replace").read()
+        lines = [l for l in log.splitlines() if l.strip() and not l.startswith("em++: error: '/")]
+        return BUILD_FAILED.format(log="\n".join(lines[:150])[:15000])
+    console = open(sub.path("run.log"), errors="replace").read().splitlines() if os.path.exists(sub.path("run.log")) else []
+    return RUN_FAILED.format(error=sub.meta.get("error") or "unknown", console="\n".join(console[-80:])[-8000:] or "(empty)")
+
+
+def error_key(meta):
+    e = re.sub(r"\d+", "#", meta.get("error") or "")
+    return f"{meta.get('stage')}: {e[:160]}"
+
+
+VIEW_KEYS = ("lines", "build_ok", "build_seconds", "wasm_bytes", "run_ok", "startup_seconds", "fps_software",
+             "console_errors", "validation_errors", "shader_errors", "change_without_input", "change_with_input")
+
+
+def repair(job, prompt, run_dir):
+    """Show the model its errors until the program works or it is stuck.
+    Returns "ok" or "failed"; raises InfraError to be resumed on the next pass."""
+    first = job.meta.setdefault("first_try", {k: job.meta.get(k) for k in
+                                ("stage", "error", "cost", "gen_seconds", "lines", "build_ok", "run_ok")})
+    seen, codes, rounds = {}, set(), []
+    prev = job
+    if os.path.exists(job.path("main.cpp")):
+        codes.add(open(job.path("main.cpp")).read())
+    seen[error_key(first)] = 1
+    n = 0
+    while True:
+        n += 1
+        r = Round(job, n)
+        if r.meta.get("status") not in ("ok", "failed"):
+            answer = open(prev.path("response.md"), errors="replace").read() if os.path.exists(prev.path("response.md")) else ""
+            messages = [{"role": "user", "content": prompt},
+                        {"role": "assistant", "content": answer.strip() or "(empty reply)"},
+                        {"role": "user", "content": feedback(prev)}]
+            g = generate(r, prompt, messages)
+            if g == "infra-error":
+                r.save()
+                raise InfraError(f"repair round {n}: {r.meta.get('error')}")
+            ok = False
+            if g == "ok":
+                code = open(r.path("main.cpp")).read()
+                if code in codes:
+                    r.meta.update({"stage": "repair", "error": "sent back code identical to an earlier attempt"})
+                else:
+                    ok = build(r) and run_app(r)
+            r.meta["status"] = "ok" if ok else "failed"
+            r.save()
+        if os.path.exists(r.path("main.cpp")):
+            codes.add(open(r.path("main.cpp")).read())
+        rounds.append({"round": n, "status": r.meta["status"], "stage": r.meta.get("stage"), "error": r.meta.get("error"),
+                       "cost": r.meta.get("cost") or 0, "gen_seconds": r.meta.get("gen_seconds") or 0,
+                       "lines": r.meta.get("lines")})
+        job.meta.update({"rounds": rounds, "repair_rounds": n,
+                         "cost": (first.get("cost") or 0) + sum(x["cost"] for x in rounds),
+                         "gen_seconds": round((first.get("gen_seconds") or 0) + sum(x["gen_seconds"] for x in rounds), 1)})
+        job.save()
+        if r.meta["status"] == "ok":
+            job.meta.update({k: r.meta.get(k) for k in VIEW_KEYS})
+            job.meta.update({"view_dir": os.path.relpath(r.dir, run_dir), "fixed_in": n, "stage": None, "error": None})
+            return "ok"
+        k = error_key(r.meta)
+        seen[k] = seen.get(k, 0) + 1
+        if r.meta.get("stage") == "repair" or seen[k] >= SAME_ERROR_LIMIT:
+            why = r.meta["error"] if r.meta.get("stage") == "repair" else f"the same failure {seen[k]} times"
+            job.meta.update({"repair_stop": f"stuck after {n} rounds: {why}", "stage": r.meta.get("stage"),
+                             "error": r.meta.get("error")})
+            return "failed"
+        prev = r
+
+
 # ---------------------------------------------------------------- status
 
 class Status:
@@ -484,10 +595,8 @@ def main():
     ap.add_argument("--run", default=datetime.date.today().isoformat())
     ap.add_argument("--trials", type=int, default=3)
     ap.add_argument("--only", default="")
-    ap.add_argument("--stage", choices=["generate", "build", "run"], default="run")
     ap.add_argument("--budget", type=float, default=None, help="optional USD cap; no new API job starts past it")
-    ap.add_argument("--run-workers", type=int, default=3)
-    ap.add_argument("--retry-failed", action="store_true", help="also redo jobs the model failed (normally never)")
+    ap.add_argument("--no-repair", action="store_true", help="first attempts only, no repair rounds")
     a = ap.parse_args()
     RUN = a.run
 
@@ -504,7 +613,9 @@ def main():
     jobs = [Job(m, cfg["providers"][m["provider"]], t, run_dir) for m in models for t in range(1, a.trials + 1)]
     for j in jobs:
         s = j.meta.get("status")
-        if s == "ok" or (s == "failed" and not a.retry_failed):
+        if s in ("ok", "failed") and j.meta.get("first_try_ok") is None:   # from before repair rounds existed
+            j.meta["first_try_ok"] = s == "ok"
+        if s == "ok" or (s == "failed" and (j.meta.get("repair_stop") or a.no_repair)):
             j.state = s
     status = Status(jobs)
     spent_lock = threading.Lock()
@@ -521,40 +632,34 @@ def main():
         job.state = state or status_value
         job.save()
 
-    post = cf.ThreadPoolExecutor(a.run_workers)
-
-    def after_generate(job):
+    def run_one(job):
+        if job.state in ("ok", "failed"):
+            return
         try:
-            if a.stage == "generate":
-                return finish(job, "generate-done", "generated")
-            if not build(job):
+            if job.meta.get("first_try_ok") is None:            # the first attempt, exactly as specified
+                if job.provider["kind"] == "openai" and not os.path.exists(job.path("main.cpp")):
+                    with spent_lock:
+                        if a.budget is not None and spent() >= a.budget:
+                            return finish(job, "budget-skip")
+                g = generate(job, prompt)
+                if g == "infra-error":
+                    return finish(job, g)
+                ok = g == "ok" and build(job) and run_app(job)
+                job.meta["first_try_ok"] = ok
+                job.save()
+                if ok:
+                    return finish(job, "ok")
+            if a.no_repair:
                 return finish(job, "failed")
-            if a.stage == "build":
-                return finish(job, "build-done", "built")
-            finish(job, "ok" if run_app(job) else "failed")
+            with spent_lock:
+                if a.budget is not None and job.provider["kind"] == "openai" and spent() >= a.budget:
+                    return finish(job, "budget-skip")
+            finish(job, repair(job, prompt, run_dir))
         except InfraError as e:
             job.meta.update({"error": str(e)[:300]})
             finish(job, "infra-error")
         except Exception:
             job.meta.update({"error": traceback.format_exc()[-500:]})
-            finish(job, "infra-error")
-
-    def run_one(job):
-        if job.state in ("ok", "failed"):
-            return
-        try:
-            if job.provider["kind"] == "openai" and not os.path.exists(job.path("main.cpp")):
-                with spent_lock:
-                    if a.budget is not None and spent() >= a.budget:
-                        return finish(job, "budget-skip")
-            g = generate(job, prompt)
-            if g != "ok":
-                return finish(job, g)
-            job.state = "queued-run"
-            job.save()
-            post.submit(after_generate, job)
-        except Exception:
-            job.meta.update({"stage": "generate", "error": traceback.format_exc()[-500:]})
             finish(job, "infra-error")
 
     pools = {name: cf.ThreadPoolExecutor(p.get("concurrency", 4)) for name, p in cfg["providers"].items()}
@@ -576,7 +681,6 @@ def main():
     cf.wait(futures)
     for p in pools.values():
         p.shutdown(wait=True)
-    post.shutdown(wait=True)
     stop.set()
     write_index(run_dir, jobs, prompt)
     status.render(spent(), final=True)

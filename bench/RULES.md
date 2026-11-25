@@ -19,7 +19,7 @@ are stated to the model in the prompt.
 | Other sampling settings | Provider defaults, recorded. |
 | Stalled connection | No data for 15 minutes (API) or 30 minutes (local) is an infrastructure failure. Streams send keep-alives while a model reasons, so a slow model never trips this. |
 | Infrastructure failures | Network errors, HTTP errors, rate limits, provider errors, and streams that end without a finish reason. Retried up to 5 times with backoff (30 s to 8 min). If all fail, the job is `infra-error`: excluded from scores and retried by the next pass of the same run. |
-| Model failures | No code block, empty answer, stuck, failed build, crash. Never retried. The 3 trials are independent samples, and all are reported. `--retry-failed` exists only for fixing harness bugs, and its use is recorded in the manifest. |
+| Model failures | No code block, empty answer, stuck, failed build, crash. Never retried. The 3 trials are independent samples, and all are reported. A failed first attempt goes to repair rounds (section 3b). |
 
 ## 2. Fair timing
 
@@ -47,6 +47,18 @@ library cache is prepared once and read-only for entries.
 | Input | The same for every entry: at second 5, the left button is held and the cursor traces a figure-eight through the middle of the window for about 5 seconds, as real browser mouse events. |
 | Recorded | Screenshots at 1, 4, 7.5, 11 and 14 s (11 s is the poster), frames per second in software, how much the image changes without input (1 s to 4 s) and from the drag (4 s to 11 s), console errors, sokol validation and shader errors. |
 | Judging | People run every working entry live in the gallery on their own GPU, alone or side by side. |
+
+## 3b. Repair rounds
+
+The first attempt is scored on its own ("works on the first try"). If it
+fails, the model gets repair rounds: a conversation of the original prompt,
+its previous answer, and the real errors (compiler messages, or the browser
+test's error and console output), asking for the complete corrected program.
+Each round is generated under the same rules as section 1, then built and
+tested exactly like the first attempt. There is no round limit. A job stops
+when a round works, or when it is stuck: the same failure 3 times in that
+job, or code identical to an earlier attempt. Rounds are kept in the trial's
+`rN/` folders, and their cost and time are added to the trial.
 
 ## 4. Spending
 

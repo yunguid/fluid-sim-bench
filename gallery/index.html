@@ -179,7 +179,9 @@ const base = () => `../results/${state.run}/`;
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const money = c => c == null ? "–" : c === 0 ? "local" : c < 0.01 ? "<$0.01" : `$${c.toFixed(2)}`;
 const secs = s => s == null ? "–" : s < 90 ? `${Math.round(s)} s` : s < 5400 ? `${(s / 60).toFixed(1)} min` : `${(s / 3600).toFixed(1)} h`;
-const works = e => e.status === "ok" && e.run_ok;
+const works = e => e.status === "ok";
+const vdir = e => base() + (e.view_dir || e.dir) + "/";   // the version that works: first try or a repair round
+const firstTry = e => e.first_try_ok ?? (e.status === "ok" && !e.fixed_in);
 const waiting = e => !e.status || e.status === "infra-error" || e.status === "budget-skip" || e.status.endsWith("-done");
 
 async function loadRuns() {
@@ -203,7 +205,7 @@ function groups() {
   for (const e of state.data.entries) (by[e.slug] ??= []).push(e);
   const ms = Object.entries(by).map(([slug, es]) => ({
     slug, es: es.sort((a, b) => a.trial - b.trial), model: es[0].model, local: es[0].provider === "ollama",
-    working: es.filter(works).length, cost: es.reduce((s, e) => s + (e.cost || 0), 0),
+    working: es.filter(works).length, first: es.filter(e => works(e) && firstTry(e)).length, cost: es.reduce((s, e) => s + (e.cost || 0), 0),
   }));
   ms.sort(state.sort === "name" ? (a, b) => a.slug.localeCompare(b.slug)
         : state.sort === "cost" ? (a, b) => b.cost - a.cost || a.slug.localeCompare(b.slug)
@@ -222,7 +224,7 @@ function render() {
   $("#list").innerHTML = ms.map(m => {
     const shown = m.es.filter(keep);
     if (!shown.length) return "";
-    const about = `${m.working} of ${m.es.length} work, ${m.local ? "runs locally" : money(m.cost)}`;
+    const about = `${m.working} of ${m.es.length} work (${m.first} on the first try), ${m.local ? "runs locally" : money(m.cost)}`;
     return `<section class="model"><div><h2>${esc(m.slug)}</h2><div class="about">${about}</div></div>
       <div class="plates">${shown.map(plate).join("")}</div></section>`;
   }).join("") || `<div class="empty">Nothing here with this filter.</div>`;
@@ -237,19 +239,19 @@ function render() {
 }
 
 function plate(e) {
-  const d = base() + e.dir + "/";
+  const d = vdir(e);
   let face;
-  if (e.run_ok != null && e.build_ok) face = `<button class="plate" aria-label="Run ${esc(e.slug)} trial ${e.trial} live"><img src="${d}poster.jpg" alt="" loading="lazy"></button>`;
+  if (works(e)) face = `<button class="plate" aria-label="Run ${esc(e.slug)} trial ${e.trial} live"><img src="${d}poster.jpg" alt="" loading="lazy"></button>`;
   else if (waiting(e)) face = `<button class="plate hollow waiting"><b>${e.status === "infra-error" ? "Will retry" : "In progress"}</b><span>${esc(e.state || e.status || "queued")}</span></button>`;
-  else face = `<button class="plate hollow"><b>Failed at ${esc(e.stage || "unknown stage")}</b><span>${esc(e.error || "")}</span></button>`;
+  else face = `<button class="plate hollow"><b>Failed at ${esc(e.stage || "unknown stage")}${e.repair_rounds ? ` after ${e.repair_rounds} repair rounds` : ""}</b><span>${esc(e.error || "")}</span></button>`;
   const picked = state.picked.some(p => p.dir === e.dir);
-  const toggle = e.build_ok ? `<button class="toggle" aria-pressed="${picked}" aria-label="Add to comparison" title="Compare">${picked ? "✓" : "+"}</button>` : "";
+  const toggle = works(e) ? `<button class="toggle" aria-pressed="${picked}" aria-label="Add to comparison" title="Compare">${picked ? "✓" : "+"}</button>` : "";
   const flags = [];
   if (e.change_without_input != null && e.change_without_input < 0.5) flags.push("still without input");
   if (e.change_with_input != null && e.change_with_input < 0.5) flags.push("ignores the drag");
   if (e.validation_errors) flags.push(`${e.validation_errors} validation errors`);
   return `<div class="entry" data-dir="${esc(e.dir)}">${face}${toggle}
-    <div class="facts"><span class="t">Trial ${e.trial}</span>${e.lines ? `<span>${e.lines} lines</span>` : ""}
+    <div class="facts"><span class="t">Trial ${e.trial}</span>${works(e) ? `<span class="t">${firstTry(e) ? "first try" : `fixed in ${e.fixed_in} round${e.fixed_in > 1 ? "s" : ""}`}</span>` : ""}${e.lines ? `<span>${e.lines} lines</span>` : ""}
       ${e.gen_seconds ? `<span>${secs(e.gen_seconds)}</span>` : ""}${e.cost ? `<span>${money(e.cost)}</span>` : ""}
       ${flags.map(f => `<span class="flag">${f}</span>`).join("")}</div></div>`;
 }
@@ -258,7 +260,7 @@ function plate(e) {
 function togglePick(e) {
   const i = state.picked.findIndex(p => p.dir === e.dir);
   if (i >= 0) state.picked.splice(i, 1);
-  else { if (state.picked.length >= MAX_COMPARE) state.picked.shift(); state.picked.push({ dir: e.dir, slug: e.slug, trial: e.trial }); }
+  else { if (state.picked.length >= MAX_COMPARE) state.picked.shift(); state.picked.push({ dir: e.dir, view: vdir(e), slug: e.slug, trial: e.trial }); }
   render();
 }
 function updateTray() {
@@ -272,26 +274,26 @@ function openCompare() {
   g.style.gridTemplateColumns = n === 2 ? "1fr 1fr" : n >= 3 ? "1fr 1fr" : "1fr";
   g.style.gridTemplateRows = n >= 3 ? "1fr 1fr" : "1fr";
   g.innerHTML = state.picked.map(p => `<div class="cell"><span>${esc(p.slug)}, trial ${p.trial}</span>
-    <iframe src="${base()}${p.dir}/web/index.html" title="${esc(p.slug)} trial ${p.trial}"></iframe></div>`).join("");
+    <iframe src="${p.view}web/index.html" title="${esc(p.slug)} trial ${p.trial}"></iframe></div>`).join("");
   $("#compare").classList.add("on");
 }
 function closeCompare() { $("#c-grid").innerHTML = ""; $("#compare").classList.remove("on"); }
 
 /* ---------- viewer */
-const TABS = [["shots", "Screenshots"], ["code", "Code"], ["response", "Answer"], ["reasoning", "Reasoning"],
+const TABS = [["shots", "Screenshots"], ["attempts", "Attempts"], ["code", "Code"], ["response", "Answer"], ["reasoning", "Reasoning"],
               ["build", "Build log"], ["run", "Test log"], ["meta", "Everything"]];
 const FILES = { code: "main.cpp", response: "response.md", reasoning: "reasoning.md", build: "build.log", run: "run.log" };
 
 function openViewer(e) {
   state.open = e.dir;
-  const d = base() + e.dir + "/";
-  $("#v-stage").innerHTML = e.build_ok
+  const d = vdir(e);
+  $("#v-stage").innerHTML = works(e)
     ? `<iframe src="${d}web/index.html" title="${esc(e.slug)} trial ${e.trial}, live"></iframe>`
     : `<div class="none">${esc(e.error || "This entry has no program yet.")}</div>`;
   $("#viewer").classList.add("on");
   document.body.style.overflow = "hidden";
   refreshViewer();
-  showTab(e.run_ok != null ? state.tab : "code");
+  showTab(works(e) ? state.tab : "attempts");
 }
 function closeViewer() {
   state.open = null;
@@ -310,24 +312,33 @@ function refreshViewer() {
   $("#v-trials").querySelectorAll("button").forEach(b => b.onclick = () => openViewer(sibs.find(s => s.dir === b.dataset.dir)));
   const result = works(e) ? "Works" : waiting(e) ? "In progress" : `Failed at ${e.stage || "?"}`;
   const yes = (v, t) => v == null ? "–" : v >= t ? "Yes" : "No";
-  const rows = [["Result", result], ["Generation", secs(e.gen_seconds)], ["Cost", money(e.cost)], ["Lines", e.lines ?? "–"],
+  const tries = works(e) ? (firstTry(e) ? "Worked on the first try" : `Fixed after ${e.fixed_in} repair round${e.fixed_in > 1 ? "s" : ""}`)
+              : e.repair_rounds ? `${e.repair_rounds} repair rounds, ${e.repair_stop || "still going"}` : "–";
+  const rows = [["Result", result], ["Attempts", tries], ["Generation", secs(e.gen_seconds)], ["Cost", money(e.cost)], ["Lines", e.lines ?? "–"],
     ["Reasoning", e.reasoning_tokens ? `${Math.round(e.reasoning_tokens / 1000)}k tokens` : "–"],
     ["Software fps", e.fps_software ?? "–"], ["Moves on its own", yes(e.change_without_input, 0.5)], ["Responds to drag", yes(e.change_with_input, 0.5)]];
   if (e.error) rows.push(["Error", e.error]);
   $("#v-facts").innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join("");
-  $("#v-hint").textContent = e.build_ok ? "Drag in the simulation to push the fluid. Arrow keys step between entries." : "";
+  $("#v-hint").textContent = works(e) ? "Drag in the simulation to push the fluid. Arrow keys step between entries." : "";
   $("#v-tabs").innerHTML = TABS.map(([k, l]) => `<button role="tab" data-tab="${k}" aria-selected="${k === state.tab}">${l}</button>`).join("");
   $("#v-tabs").querySelectorAll("button").forEach(b => b.onclick = () => showTab(b.dataset.tab));
 }
 async function showTab(tab) {
   state.tab = tab;
   $("#v-tabs").querySelectorAll("button").forEach(b => b.setAttribute("aria-selected", b.dataset.tab === tab));
-  const e = current(), d = base() + e.dir + "/", pane = $("#v-pane");
+  const e = current(), d = vdir(e), pane = $("#v-pane");
   if (tab === "shots") {
     if (e.run_ok == null) { pane.innerHTML = `<p>Not tested yet.</p>`; return; }
     const shots = [[1, "1 s"], [4, "4 s"], [7.5, "7.5 s, mid-drag"], [11, "11 s, after the drag"], [14, "14 s"]];
     pane.innerHTML = `<div class="shots">${shots.map(([s, c]) => `<figure><img src="${d}shots/${s}.jpg" alt="Screenshot at ${c}" loading="lazy" onerror="this.parentNode.remove()"><figcaption>${c}</figcaption></figure>`).join("")}</div>
       <p>From the automated test: headless Chromium, software WebGL2, 1280×720. The drag runs from 5 s to 10 s.</p>`;
+    return;
+  }
+  if (tab === "attempts") {
+    const f = e.first_try || { stage: e.stage, error: e.error, lines: e.lines, cost: e.cost };
+    const list = [{ label: "First try", ok: firstTry(e) && works(e), ...f }, ...(e.rounds || []).map(r => ({ label: `Repair round ${r.round}`, ok: r.status === "ok", ...r }))];
+    pane.innerHTML = `<dl>${list.map(x => `<dt>${x.label}</dt><dd>${x.ok ? "Works" : esc(x.stage ? `Failed at ${x.stage}: ${x.error || ""}` : "In progress")}</dd>`).join("")}</dl>
+      <p>After a failed attempt, the model is shown its own compiler or browser errors and asked for a corrected program, until it works or repeats the same failure 3 times.</p>`;
     return;
   }
   if (tab === "meta") { pane.innerHTML = `<pre>${esc(JSON.stringify(e, null, 2))}</pre>`; return; }
@@ -336,7 +347,7 @@ async function showTab(tab) {
   if (state.tab === tab) pane.innerHTML = text ? `<pre>${esc(text)}</pre>` : `<p>Not available for this entry.</p>`;
 }
 function step(dir) {
-  const list = state.order.filter(e => e.build_ok);
+  const list = state.order.filter(works);
   const i = list.findIndex(e => e.dir === state.open);
   if (list.length) openViewer(list[(i + dir + list.length) % list.length]);
 }

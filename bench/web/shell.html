@@ -44,7 +44,7 @@
     print: t => { B.log.push(t); console.log(t); },
     printErr: t => { B.log.push(t); console.warn(t); },
     onRuntimeInitialized: () => { B.ready = true; msg.textContent = ''; },
-    onAbort: what => { B.aborted = true; fail('program aborted: ' + what); },
+    onAbort: what => { B.aborted = true; fail('program aborted: ' + (what || B.log.slice(-3).join(' | ') || 'no message')); },
   };
   document.getElementById('canvas').focus();
 </script>
